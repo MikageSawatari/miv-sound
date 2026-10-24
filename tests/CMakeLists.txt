@@ -108,6 +108,13 @@ endif()
 add_test(NAME effetune_file_exchange_tests COMMAND effetune_file_exchange_tests)
 
 if(WIN32 AND TARGET effetune_plugin)
+  add_executable(miv_sound_tests unit/miv_sound_tests.cpp)
+  target_link_libraries(miv_sound_tests PRIVATE sdk effetune_engine version)
+  target_compile_features(miv_sound_tests PRIVATE cxx_std_20)
+  target_compile_options(miv_sound_tests PRIVATE /W4 /WX /utf-8)
+  add_dependencies(miv_sound_tests effetune_plugin)
+  add_test(NAME miv_sound_tests COMMAND miv_sound_tests "$<TARGET_FILE:effetune_plugin>"
+    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/miv-mixwright-state.json")
   add_executable(effetune_now_playing_metadata_tests
     unit/now_playing_metadata_tests.cpp
     ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.cpp
@@ -175,6 +182,7 @@ if(WIN32 AND TARGET effetune_ui_assets)
   target_link_libraries(effetune_webview_initialisation_tests PRIVATE
     effetune_choc user32 ole32 shell32 shlwapi)
   target_compile_features(effetune_webview_initialisation_tests PRIVATE cxx_std_20)
+  target_include_directories(effetune_webview_initialisation_tests PRIVATE "${PROJECT_SOURCE_DIR}/src")
   target_compile_options(effetune_webview_initialisation_tests PRIVATE /W4 /WX /utf-8)
   target_compile_definitions(effetune_webview_initialisation_tests PRIVATE
     EFFETUNE_WEBVIEW_LOADER_FIXTURE="$<TARGET_FILE:effetune_webview_loader_fixture>")
@@ -228,7 +236,7 @@ if(APPLE AND TARGET effetune_plugin)
     COMMAND "${CMAKE_COMMAND}"
             "-DBUNDLE_PATH=$<TARGET_BUNDLE_DIR:effetune_plugin>"
             "-DEXPECTED_EXECUTABLE=${EFFETUNE_PLUGIN_PACKAGE_NAME}"
-            "-DEXPECTED_IDENTIFIER=com.frieve.effetune.plugin"
+            "-DEXPECTED_IDENTIFIER=${EFFETUNE_PLUGIN_BUNDLE_IDENTIFIER}"
             "-DEXPECTED_VERSION=${PROJECT_VERSION}"
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/verify_macos_bundle_info.cmake")
 endif()
@@ -254,3 +262,11 @@ else()
 endif()
 add_test(NAME effetune_sfz_library_tests COMMAND effetune_sfz_library_tests)
 set_tests_properties(effetune_sfz_library_tests PROPERTIES TIMEOUT 1200)
+
+# Every test gets its own disposable build-tree storage, including validators
+# and child-process smoke fixtures. None may inherit the user's data directory.
+get_property(effetune_registered_tests DIRECTORY PROPERTY TESTS)
+foreach(effetune_test IN LISTS effetune_registered_tests)
+  set_property(TEST "${effetune_test}" APPEND PROPERTY ENVIRONMENT
+    "MIV_SOUND_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/miv-sound-test-data/${effetune_test}")
+endforeach()

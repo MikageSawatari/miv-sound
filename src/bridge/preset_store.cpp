@@ -1,5 +1,7 @@
 #include "bridge/preset_store.h"
 
+#include "bridge/data_directory.h"
+
 #include <fstream>
 #include <iterator>
 #include <system_error>
@@ -7,9 +9,6 @@
 
 #if defined(_WIN32)
 #include <Windows.h>
-#include <ShlObj.h>
-#elif defined(__APPLE__)
-#include <cstdlib>
 #endif
 
 namespace effetune::vst {
@@ -29,7 +28,8 @@ PresetStore::PresetStore() : PresetStore(resolvePresetPath()) {}
 
 PresetStore::PresetStore(std::filesystem::path presetPath)
     : presetPath_(std::move(presetPath)),
-      pluginPresetPath_(presetPath_.parent_path() / kPluginPresetFileName) {}
+      pluginPresetPath_(presetPath_.empty() ? std::filesystem::path{}
+                                           : presetPath_.parent_path() / kPluginPresetFileName) {}
 
 void PresetStore::setError(std::string *destination, std::string value) {
   if (destination != nullptr) {
@@ -38,31 +38,9 @@ void PresetStore::setError(std::string *destination, std::string value) {
 }
 
 std::filesystem::path PresetStore::resolvePresetPath() {
-#if defined(_WIN32)
-  wchar_t appData[MAX_PATH]{};
-  if (SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appData) == S_OK) {
-    const std::filesystem::path base(appData);
-    const auto desktopDirectory = base / L"effetune";
-    std::error_code error;
-    if (std::filesystem::exists(desktopDirectory, error)) {
-      return desktopDirectory / L"effetune_presets.json";
-    }
-    return base / L"Frieve" / L"EffeTunePlugin" / L"effetune_presets.json";
-  }
-#elif defined(__APPLE__)
-  if (const auto *home = std::getenv("HOME"); home != nullptr) {
-    const std::filesystem::path base(home);
-    const auto desktopDirectory = base / "Library" / "Application Support" / "effetune";
-    std::error_code error;
-    if (std::filesystem::exists(desktopDirectory, error)) {
-      return desktopDirectory / "effetune_presets.json";
-    }
-    return base / "Library" / "Application Support" / "Frieve" / "EffeTunePlugin" /
-           "effetune_presets.json";
-  }
-#endif
-  return std::filesystem::temp_directory_path() / "EffeTunePlugin" /
-         "effetune_presets.json";
+  const auto directory = soundDataDirectory();
+  return directory.empty() ? std::filesystem::path{}
+                           : directory / "plugin" / "effetune_presets.json";
 }
 
 bool PresetStore::handles(const std::string_view virtualPath) const {
@@ -71,6 +49,7 @@ bool PresetStore::handles(const std::string_view virtualPath) const {
 
 const std::filesystem::path *
 PresetStore::pathForVirtualFile(const std::string_view virtualPath) const noexcept {
+  if (presetPath_.empty()) return nullptr;
   const auto fileName = virtualFileName(virtualPath);
   if (fileName == kPresetFileName) {
     return &presetPath_;

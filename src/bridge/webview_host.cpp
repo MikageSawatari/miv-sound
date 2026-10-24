@@ -1,4 +1,5 @@
 #include "bridge/webview_host.h"
+#include "bridge/data_directory.h"
 
 #include "choc/gui/choc_WebView.h"
 #include "choc/text/choc_JSON.h"
@@ -96,7 +97,7 @@ constexpr std::string_view kWebViewHomeUri =
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>EffeTune Mixwright</title>
+<title>mIV Sound</title>
 <style>
 html,body{height:100%;margin:0;background:#1e1e1e;color:#f0f0f0;font:16px/1.5 system-ui,sans-serif}
 body{display:grid;place-items:center}
@@ -107,8 +108,8 @@ p{margin:0;color:#d0d0d0}
 </head>
 <body>
 <main>
-<h1>EffeTune Mixwright could not load its interface.</h1>
-<p>Reinstall the complete EffeTune Mixwright.vst3 bundle, then restart your DAW.</p>
+<h1>mIV Sound could not load its interface.</h1>
+<p>Reinstall the complete mIV Sound.vst3 bundle, then restart mImageViewer.</p>
 </main>
 </body>
 </html>)";
@@ -207,7 +208,7 @@ constexpr UINT kDispatcherMessage = WM_APP + 0x45f;
 std::string WebViewHost::diagnosticText(const WebViewStatus status) {
   // CRLF because this text is rendered by a native multi-line EDIT control.
   std::string message =
-      "EffeTune Mixwright could not display its interface.\r\n\r\n";
+      "mIV Sound could not display its interface.\r\n\r\n";
   const char *code = "EFFETUNE-UI-UNKNOWN";
   switch (status) {
   case WebViewStatus::unsupportedApartment:
@@ -644,7 +645,15 @@ struct WebViewGeneration : public std::enable_shared_from_this<WebViewGeneration
     }
 #endif
     try {
+      const auto directory = soundDataDirectory();
+      if (directory.empty()) {
+        setStatus(WebViewStatus::runtimeUnavailable);
+        return;
+      }
       choc::ui::WebView::Options options;
+#if defined(_WIN32)
+      options.userDataFolder = (directory / "webview").wstring();
+#endif
 #if !defined(NDEBUG)
       options.enableDebugMode = true;
 #endif

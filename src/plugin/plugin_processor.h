@@ -553,7 +553,8 @@ private:
   AutomationScheduler automationScheduler_;
   PresetStore presetStore_;
   ConfigStore configStore_;
-  SfzLibrary sfzLibrary_{configStore_.path().parent_path() / "sfz-references.json"};
+  SfzLibrary sfzLibrary_{configStore_.path().empty() ? std::filesystem::path{}
+      : configStore_.path().parent_path() / "sfz-references.json"};
   std::mutex sfzMutex_;
   std::uint64_t sfzGeneration_ = 0;
   PluginStateDocument state_;

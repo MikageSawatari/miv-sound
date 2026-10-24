@@ -1,14 +1,13 @@
 #include "bridge/config_store.h"
 
+#include "bridge/data_directory.h"
+
 #include <fstream>
 #include <iterator>
 #include <system_error>
 
 #if defined(_WIN32)
 #include <Windows.h>
-#include <ShlObj.h>
-#elif defined(__APPLE__)
-#include <cstdlib>
 #endif
 
 namespace effetune::vst {
@@ -24,22 +23,17 @@ void ConfigStore::setError(std::string *destination, std::string value) {
 }
 
 std::filesystem::path ConfigStore::resolvePath() {
-#if defined(_WIN32)
-  wchar_t appData[MAX_PATH]{};
-  if (SHGetFolderPathW(nullptr, CSIDL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appData) == S_OK) {
-    return std::filesystem::path(appData) / L"Frieve" / L"EffeTunePlugin" / L"config.json";
-  }
-#elif defined(__APPLE__)
-  if (const auto *home = std::getenv("HOME"); home != nullptr) {
-    return std::filesystem::path(home) / "Library" / "Application Support" / "Frieve" /
-           "EffeTunePlugin" / "config.json";
-  }
-#endif
-  return std::filesystem::temp_directory_path() / "EffeTunePlugin" / "config.json";
+  const auto directory = soundDataDirectory();
+  return directory.empty() ? std::filesystem::path{}
+                           : directory / "plugin" / "config.json";
 }
 
 bool ConfigStore::load(std::string &content, std::string *error) const {
   content.clear();
+  if (path_.empty()) {
+    setError(error, kDataDirectoryError);
+    return false;
+  }
   std::error_code filesystemError;
   if (!std::filesystem::exists(path_, filesystemError)) {
     content = "{}";
@@ -59,6 +53,10 @@ bool ConfigStore::load(std::string &content, std::string *error) const {
 }
 
 bool ConfigStore::save(const std::string_view content, std::string *error) const {
+  if (path_.empty()) {
+    setError(error, kDataDirectoryError);
+    return false;
+  }
   if (content.size() > 64u * 1024u) {
     setError(error, "UI config is too large");
     return false;

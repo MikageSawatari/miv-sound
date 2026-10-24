@@ -1,4 +1,5 @@
 #include "plugin_processor.h"
+#include "bridge/data_directory.h"
 
 #include "engine/latency.h"
 #include "external_url.h"
@@ -374,6 +375,13 @@ FUnknown *EffeTuneProcessor::createInstance(void *context) {
 }
 
 tresult PLUGIN_API EffeTuneProcessor::initialize(FUnknown *context) {
+  if (configStore_.path().empty() || presetStore_.presetPath().empty()) {
+#if defined(_WIN32)
+    OutputDebugStringA(kDataDirectoryError);
+    OutputDebugStringA("\n");
+#endif
+    return kInvalidArgument;
+  }
   const auto result = SingleComponentEffect::initialize(context);
   if (result != kResultOk) {
     return result;

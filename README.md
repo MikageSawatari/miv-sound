@@ -1,3 +1,30 @@
+# mIV Sound
+
+mIV Sound is a modified version of [EffeTune Mixwright](https://github.com/Frieve-A/effetune-mixwright)
+by Frieve, based on upstream **v0.15.0** (`8c9a0a5`), for audio adjustment in
+[mImageViewer](https://mikage.to/mimageviewer/). Display version: **0.15.0-miv.1**;
+numeric build version: **0.15.0.1**. Please direct inquiries about this version
+to mImageViewer.
+
+This version has its own product name, VST3 class IDs and musical-note icons.
+Settings, presets, SFZ references and WebView2 data live under the absolute
+`MIV_SOUND_DATA_DIR` supplied by mImageViewer (`plugin/` and `webview/`). A missing,
+empty or relative value fails initialization. Preset extensions and the state
+format remain compatible. Counter is hidden from the add menu and system presets;
+imported counters receive no position until a media clock is implemented.
+Copyright notices and upstream MIT licenses are preserved.
+
+On Windows, initialize the submodules, install VS 2026 BuildTools, CMake 4.3 and
+Node 22, then run `build-miv.bat` (`build-miv.bat --no-test` skips CTest).
+The script uses the bundled Ninja, reuses an already downloaded VST3 SDK without
+network access, and returns 2/3/4 for configure/build/test failures (1 for setup).
+Output: `build/windows-release/VST3/Release/mIV Sound.vst3`.
+CTest supplies separate disposable `MIV_SOUND_DATA_DIR` paths for tests.
+
+The upstream README is retained below for reference.
+
+---
+
 # EffeTune Mixwright
 
 EffeTune Mixwright brings EffeTune's C++ DSP engine and desktop interface to the VST® 3 format. Windows x64 is the primary target, with macOS arm64 and x86_64 as secondary targets. The plug-in handles one to eight audio channels and supports five-bus processing pipelines, a WebView interface, A/B state management, telemetry, and 1×, 2×, 4×, and 8× oversampling.

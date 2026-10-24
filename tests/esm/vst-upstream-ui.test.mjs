@@ -93,7 +93,7 @@ test('bundled Visualizer module graph retains viewport menu clamping', async () 
   } finally { globalThis.window = previousWindow; }
 });
 
-test('Visualizer add-item choices omit Lyrics and Video while retaining Counter', async () => {
+test('Visualizer add-item choices omit Lyrics, Video and Counter while retaining their saved types', async () => {
   const { VisualizerEditor } = await assetModule('js/visualizer/visualizer-editor.js');
   const { ITEM_TYPES, createDefaultLayout } = await assetModule('js/visualizer/visualizer-model.js');
   const previousDocument = globalThis.document;
@@ -120,12 +120,13 @@ test('Visualizer add-item choices omit Lyrics and Video while retaining Counter'
     assert.throws(() => VisualizerEditor.prototype.render.call(editor), error => error === reachedChoices);
     assert.ok(ITEM_TYPES.includes('lyrics'), 'Lyrics remains a supported saved item type');
     assert.ok(ITEM_TYPES.includes('video'), 'Video remains a supported saved item type');
-    assert.ok(choices.includes('counter'));
-    assert.deepEqual(choices.toSorted(), ITEM_TYPES.filter(type => !['lyrics', 'video'].includes(type)).toSorted());
+    assert.ok(ITEM_TYPES.includes('counter'));
+    assert.ok(!choices.includes('counter'));
+    assert.deepEqual(choices.toSorted(), ITEM_TYPES.filter(type => !['lyrics', 'video', 'counter'].includes(type)).toSorted());
   } finally { globalThis.document = previousDocument; }
 });
 
-test('bundled Visualizer system presets omit only Lyric Stage across all aspects', async () => {
+test('bundled Visualizer system presets omit Lyric Stage and Counter Gallery across all aspects', async () => {
   const sourceDirectory = new URL('../../external/effetune/presets/visualizer/', import.meta.url);
   const { VisualizerPresetStore } = await assetModule('js/visualizer/visualizer-preset-store.js');
   const { ASPECT_FILES } = await assetModule('js/visualizer/visualizer-model.js');
@@ -139,6 +140,7 @@ test('bundled Visualizer system presets omit only Lyric Stage across all aspects
   for (const file of files) {
     const expected = JSON.parse(await readFile(new URL(file, sourceDirectory), 'utf8'));
     delete expected['Lyric Stage'];
+    delete expected['Counter Gallery'];
     const actual = JSON.parse(await assetText(`presets/visualizer/${file}`));
     assert.deepEqual(actual, expected, `${file} retains all other presets, including Cinema Strip`);
     const aspect = Object.keys(ASPECT_FILES).find(aspect => ASPECT_FILES[aspect] === file);
@@ -183,28 +185,21 @@ test('bundled Visualizer reads transient host metadata without an internal playe
   assert.equal(VisualizerView.prototype.metadata.call(view), null);
 });
 
-test('Visualizer Counter follows project transport and cannot reset on click or editor reopen', async () => {
+test('imported Counter layouts receive no misleading project position', async () => {
   const { VisualizerView } = await assetModule('js/visualizer/visualizer-view.js');
-  let transport = null;
-  const createView = () => ({ layout: { items: [{ id: 'counter', type: 'counter' }] },
-    uiManager: { audioManager: { getHostTransport: () => transport } },
-    counters: VisualizerView.prototype.counters });
-  let view = createView();
-  const descriptor = now => view.counters(now).get('counter');
-  assert.deepEqual(descriptor(100), { time: 0, trackIndex: 0, external: false, playing: false,
-    speed: 1, source: 'vst-host-project', stamp: .1 });
-  for (const [samples, playing] of [[96000, true], [144000, false], [480000, true], [48000, true], [-24000, false]]) {
-    transport = { projectTimeSamples: samples, sampleRate: 48000, playing };
-    assert.equal(descriptor(5000).time, Math.max(0, samples / 48000));
-    assert.equal(descriptor(9000).time, descriptor(5000).time, 'wall time never advances the project clock');
-    assert.equal(descriptor(9000).playing, playing);
-    assert.equal(VisualizerView.prototype.resetCounter.call(view, 'counter', 10000), false);
-    view = createView();
-    assert.equal(descriptor(11000).time, Math.max(0, samples / 48000), 'a reopened editor uses the same project position');
+  const { normalizeLayout, snapshotLayout, encodeLayoutShare, decodeLayoutShare } =
+    await assetModule('js/visualizer/visualizer-model.js');
+  const original = JSON.parse(await readFile(new URL(
+    '../../external/effetune/presets/visualizer/16x9.json', import.meta.url), 'utf8'))['Counter Gallery'];
+  const layout = normalizeLayout(original);
+  assert.ok(layout.items.some(item => item.type === 'counter'));
+  assert.deepEqual(decodeLayoutShare(encodeLayoutShare(layout)), snapshotLayout(layout));
+  const view = { layout, uiManager: { audioManager: { getHostTransport() {
+    throw new Error('Counter must not read the host project position');
+  } } } };
+  for (const stamp of [0, 1000, 100000]) {
+    assert.deepEqual(VisualizerView.prototype.counters.call(view, stamp), new Map());
   }
-  transport = null;
-  assert.equal(descriptor(20000).time, 0);
-  assert.equal(descriptor(20000).playing, false);
   assert.equal(VisualizerView.prototype.videoFrame.call(view), null);
 });
 
@@ -795,7 +790,7 @@ test('native SFZ preparation resolves ARIA bank definitions passed through the b
   assert.deepEqual(reads, ['program.sfz', 'instrument.bank.xml']);
 });
 
-test('bundled tour teaches DAW workflows, persists first run and supports manual reopening', async () => {
+test('bundled tour teaches mImageViewer playback, persists first run and supports manual reopening', async () => {
   const { OnboardingTour, TOUR_STEPS, shouldAutoStart } = await assetModule('js/ui/onboarding-tour.js');
   const context = await bootstrap(async () => ({ ok: true }));
   const previous = { document: globalThis.document, window: globalThis.window };
@@ -826,7 +821,8 @@ test('bundled tour teaches DAW workflows, persists first run and supports manual
       assert.ok(!/Open music|Music Library|Audio Configuration|What's this app/.test(tour.body.textContent));
       if (step.id === 'sound') {
         assert.equal(step.target, '#pipeline');
-        assert.match(tour.body.textContent, /DAW/);
+        assert.match(tour.body.textContent, /mImageViewer/);
+        assert.doesNotMatch(tour.body.textContent, /DAW|Mixwright/);
       }
       if (step.id === 'views') assert.equal(step.target, '#visualizerButton');
       if (step.id === 'help') assert.match(tour.body.textContent, /Settings.*Help/);
@@ -955,6 +951,87 @@ async function bootstrap(hostMessage) {
   });
   return context;
 }
+
+test('Help, upstream credit, effect docs and AI clicks send production URLs through the native bridge', async () => {
+  const calls = [];
+  const context = await bootstrap(async serialized => {
+    calls.push(JSON.parse(serialized));
+    return { ok: true };
+  });
+  const { document, window } = context;
+  context.MutationObserver = class { observe() {} };
+  const createElement = document.createElement;
+  document.createElement = tag => Object.assign(createElement(tag), {
+    style: {},
+    querySelector: () => ({ value: '', style: {} })
+  });
+  const header = document.createElement('div');
+  const menu = document.createElement('div');
+  menu.id = 'settingsMenu';
+  const settingsButton = document.createElement('button');
+  settingsButton.id = 'settingsMenuButton';
+  settingsButton.addEventListener('click', () => menu.classList.toggle('show'));
+  header.append(settingsButton, menu);
+  header.insertBefore = node => header.appendChild(node);
+  document.body.appendChild(header);
+  document.getElementById = id => flatten(document.body).find(node => node.id === id) || null;
+  document.querySelector = selector => selector === '.header-buttons' ? header
+    : selector === '.ai-dialog' ? byClass(document.body, 'ai-dialog') : null;
+  window.open = () => assert.fail('The click bypassed the native host');
+  const { UIManager } = await assetModule('js/ui-manager.js');
+  window.uiManager = {
+    userLanguage: 'ja',
+    t: key => ({ 'menu.help.help': 'ヘルプ' })[key] || key,
+    getLocalizedDocPath: UIManager.prototype.getLocalizedDocPath,
+    setError: message => assert.fail(message)
+  };
+  const previous = { document: globalThis.document, window: globalThis.window };
+  Object.assign(globalThis, { document, window });
+  try {
+    await document.dispatch('DOMContentLoaded');
+    for (const [id, label] of [
+      ['helpSettingsButton', 'ヘルプ'],
+      ['githubSettingsButton', 'Based on EffeTune Mixwright by Frieve']
+    ]) {
+      await settingsButton.click();
+      const button = document.getElementById(id);
+      assert.equal(button.textContent, label);
+      assert.equal(menu.classList.contains('show'), true);
+      await button.click();
+      assert.equal(menu.classList.contains('show'), false);
+    }
+
+    const { PipelineItemBuilder } = await assetModule('js/ui/pipeline/pipeline-item-builder.js');
+    const { PipelineAIDialog } = await assetModule('js/ui/pipeline/pipeline-ai-dialog.js');
+    const plugin = { id: 7, name: 'Volume' };
+    const core = {
+      pluginManager: { effectCategories: { Basics: { plugins: ['Volume'] } } },
+      handlePluginSelection(selected) { assert.equal(selected, plugin); }
+    };
+    const aiDialog = new PipelineAIDialog(core);
+    core.showAIDialog = aiDialog.showAIDialog.bind(aiDialog);
+    const builder = new PipelineItemBuilder(core);
+    builder.createHelpButton(plugin).onclick({});
+    await window.electronAPI.openExternalUrl(
+      'https://effetune-mixwright.localhost/docs/i18n/ja/plugins/analyzer.md#level-meter');
+    builder.createAIButton(plugin).onclick({ stopPropagation() {} });
+    const dialog = byClass(document.body, 'ai-dialog');
+    byClass(dialog, 'ai-dialog-textarea').value = 'How does it work?';
+    byClass(dialog, 'ai-dialog-button').onclick();
+    assert.equal(byClass(document.body, 'ai-dialog'), undefined, 'the AI action closes its dialog');
+
+    const query = 'How does it work?\n\nThis is about the Volume effect in mIV Sound audio processor.';
+    assert.deepEqual(calls.filter(call => call.type === 'host/openExternal'), [
+      'https://mikage.to/mimageviewer/manual/effetune.html',
+      'https://github.com/Frieve-A/effetune-mixwright',
+      'https://effetune.frieve.com/docs/i18n/ja/plugins/basics.html#volume',
+      'https://effetune.frieve.com/docs/i18n/ja/plugins/analyzer.html#level-meter',
+      `https://chatgpt.com/?q=${encodeURIComponent(query)}`
+    ].map(url => ({ type: 'host/openExternal', payload: { url } })));
+  } finally {
+    Object.assign(globalThis, previous);
+  }
+});
 
 test('bundled ElectronIntegration constructs with the VST subscription surface', async () => {
   const context = await bootstrap(async () => ({ ok: true }));

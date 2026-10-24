@@ -659,7 +659,7 @@ bool MessageRouter::decode(const std::string_view json, RoutedUiMessage &message
       decoded.content = choc::json::toString(payload["config"]);
     } else if (type == "backup/exportBegin") {
       decoded.action = UiAction::beginBackupExport;
-      decoded.defaultName = payload["defaultName"].getWithDefault<std::string>("effetune-backup.zip");
+      decoded.defaultName = payload["defaultName"].getWithDefault<std::string>("mIV Sound.effetune_backup");
       const auto bytes = payload["totalBytes"].getWithDefault<std::int64_t>(0);
       if (bytes <= 0 || bytes > 256 * 1024 * 1024) {
         setError(error, "Backup exceeds the export size limit");
@@ -684,7 +684,7 @@ bool MessageRouter::decode(const std::string_view json, RoutedUiMessage &message
       decoded.action = UiAction::openPresetDialog;
     } else if (type == "dialog/savePreset") {
       decoded.action = UiAction::savePresetDialog;
-      decoded.defaultName = payload["defaultName"].getWithDefault<std::string>("preset.effetune_preset");
+      decoded.defaultName = payload["defaultName"].getWithDefault<std::string>("mIV Sound.effetune_preset");
     } else {
       setError(error, "Unsupported bridge message type: " + type);
       return false;

@@ -1,0 +1,22 @@
+{
+  "formatVersion": 1,
+  "appVersion": "0.14.0",
+  "pipelineA": [
+    {"type": "VolumePlugin", "id": 7, "name": "Volume", "enabled": true,
+     "parameters": {"vl": -6, "enabled": true}},
+    {"type": "PolarityInversionPlugin", "id": 9, "name": "Polarity Inversion", "enabled": false,
+     "parameters": {"enabled": false}}
+  ],
+  "pipelineB": null,
+  "currentPipeline": "A",
+  "masterBypass": false,
+  "oversampling": {"factor": 2, "phase": "minimum", "quality": "high"},
+  "ui": {"columns": 2, "zoom": 1.25},
+  "automation": {
+    "logicalPluginIdWatermark": 12,
+    "bindings": [
+      {"slot": 3, "pipeline": "A", "pluginId": 12, "pluginType": "VolumePlugin",
+       "parameterKey": "vl", "elementIndex": 0, "lifecycle": "tombstone"}
+    ]
+  }
+}

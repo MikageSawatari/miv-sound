@@ -30,6 +30,7 @@ file(GLOB_RECURSE effetune_ui_source_files CONFIGURE_DEPENDS LIST_DIRECTORIES fa
   "${EFFETUNE_UPSTREAM_SOURCE_DIR}/plugins/*"
   "${EFFETUNE_UPSTREAM_SOURCE_DIR}/presets/*"
   "${EFFETUNE_UPSTREAM_SOURCE_DIR}/images/*")
+file(GLOB effetune_branding_files CONFIGURE_DEPENDS "${PROJECT_SOURCE_DIR}/branding/*")
 list(APPEND effetune_ui_source_files
   "${EFFETUNE_UPSTREAM_SOURCE_DIR}/effetune.html"
   "${EFFETUNE_UPSTREAM_SOURCE_DIR}/features/measurement/dataStorage.js"
@@ -49,6 +50,7 @@ add_custom_command(
     "${PROJECT_SOURCE_DIR}/ui-shim/vendor/jszip-3.10.2.min.js"
     "${PROJECT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt"
     ${effetune_ui_source_files}
+    ${effetune_branding_files}
   COMMENT "Preparing EffeTune WebView assets"
   VERBATIM)
 add_custom_target(effetune_ui_assets DEPENDS "${effetune_webview_assets}/.stamp")
@@ -58,6 +60,11 @@ target_link_libraries(effetune_plugin PRIVATE sdk effetune_engine)
 target_compile_features(effetune_plugin PRIVATE cxx_std_20)
 set_target_properties(effetune_plugin PROPERTIES OUTPUT_NAME "${EFFETUNE_PLUGIN_PACKAGE_NAME}")
 smtg_target_configure_version_file(effetune_plugin)
+if(WIN32)
+  enable_language(RC)
+  configure_file(plugin_version.rc.in "${CMAKE_CURRENT_BINARY_DIR}/plugin_version.rc" @ONLY)
+  target_sources(effetune_plugin PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/plugin_version.rc")
+endif()
 
 set(effetune_bundle_resources
     "${CMAKE_BINARY_DIR}/VST3/$<CONFIG>/${EFFETUNE_PLUGIN_PACKAGE_NAME}.vst3/Contents/Resources")
@@ -77,7 +84,8 @@ add_custom_command(OUTPUT "${effetune_bundle_asset_stamp}"
     effetune_plugin
     "${effetune_webview_assets}/.stamp"
     "${PROJECT_SOURCE_DIR}/THIRD-PARTY-NOTICES.txt"
-  COMMENT "Copying EffeTune WebView assets into the VST3 bundle")
+  COMMENT "Copying mIV Sound WebView assets into the VST3 bundle"
+  VERBATIM)
 add_custom_target(effetune_plugin_bundle_assets ALL DEPENDS "${effetune_bundle_asset_stamp}")
 add_dependencies(effetune_plugin_bundle_assets effetune_plugin)
 
@@ -103,14 +111,10 @@ elseif(APPLE)
 endif()
 
 if(SMTG_MAC)
-  if(EFFETUNE_AUTOMATION_HOST_GATE_FIXTURE)
-    set(effetune_bundle_identifier "com.frieve.effetune.automation-host-gate")
-  else()
-    set(effetune_bundle_identifier "com.frieve.effetune.plugin")
-  endif()
+  set(effetune_bundle_identifier "${EFFETUNE_PLUGIN_BUNDLE_IDENTIFIER}")
   smtg_target_set_bundle(effetune_plugin
     BUNDLE_IDENTIFIER "${effetune_bundle_identifier}"
-    COMPANY_NAME "Frieve")
+    COMPANY_NAME "mImageViewer")
   set_target_properties(effetune_plugin PROPERTIES
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in"
     MACOSX_BUNDLE_GUI_IDENTIFIER "${effetune_bundle_identifier}"

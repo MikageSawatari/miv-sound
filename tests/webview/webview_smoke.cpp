@@ -1,4 +1,5 @@
 #include "bridge/webview_host.h"
+#include "bridge/data_directory.h"
 #include "bridge/sfz_library.h"
 #include "plugin/editor_size.h"
 #include "choc/memory/choc_Base64.h"
@@ -22,6 +23,7 @@
 #include <string_view>
 #include <thread>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "../support/crt_dialog_suppression.h"
@@ -40,7 +42,7 @@ constexpr DWORD kProcessExitTimeoutMs = static_cast<DWORD>(
 class ScopedWebViewProfile {
 public:
   ScopedWebViewProfile() {
-    constexpr wchar_t environmentName[] = L"WEBVIEW2_USER_DATA_FOLDER";
+    constexpr wchar_t environmentName[] = L"MIV_SOUND_DATA_DIR";
     const auto previousLength =
         GetEnvironmentVariableW(environmentName, nullptr, 0);
     if (previousLength != 0) {
@@ -53,7 +55,9 @@ public:
       }
     }
     std::error_code error;
-    const auto tempRoot = std::filesystem::temp_directory_path(error);
+    const auto tempRoot = effetune::vst::soundDataDirectory();
+    if (tempRoot.empty()) return;
+    std::filesystem::create_directories(tempRoot, error);
     if (error) {
       return;
     }
@@ -208,7 +212,7 @@ private:
     if (!configured_) {
       return;
     }
-    constexpr wchar_t environmentName[] = L"WEBVIEW2_USER_DATA_FOLDER";
+    constexpr wchar_t environmentName[] = L"MIV_SOUND_DATA_DIR";
     (void)SetEnvironmentVariableW(
         environmentName, hadPreviousValue_ ? previousValue_.c_str() : nullptr);
     configured_ = false;
@@ -527,7 +531,7 @@ struct SmokeState {
     return R"({"ok":true})";
   }
   if (request.find("host/openExternal") != std::string_view::npos) {
-    if (request.find("\"url\":\"https://effetune.frieve.com/\"") !=
+    if (request.find("\"url\":\"https://mikage.to/mimageviewer/manual/effetune.html\"") !=
         std::string_view::npos) {
       state.externalAppHelpCalls.fetch_add(1, std::memory_order_relaxed);
     }
@@ -1073,6 +1077,7 @@ int main(const int argc, char **argv) {
   bool missingResourceFixtureCleanupSucceeded = true;
   bool multiThreadedApartmentDiagnosed = false;
   bool editorReportedReady = false;
+  bool webViewDataFolderUsed = false;
   bool attached = false;
   {
     int firstEditorOwner = 0;
@@ -1196,6 +1201,8 @@ int main(const int argc, char **argv) {
         webView.serviceInitialisation();
         editorReportedReady =
             webView.status() == effetune::vst::WebViewStatus::ready;
+        webViewDataFolderUsed =
+            std::filesystem::is_directory(webViewProfile.path() / "webview");
         unsupportedStateWarningShown = waitForJavascript(
             "window.app?.initialized === true && "
             "window.audioManager?.unsupportedWarningShown === true && "
@@ -2042,10 +2049,10 @@ int main(const int argc, char **argv) {
             ignored) && ignored == "true";
         const auto aboutOpened = aboutStarted && waitForJavascript(
             "(() => { const dialog = document.querySelector('.about-dialog'); "
-            "return dialog?.querySelector('h2')?.textContent === 'EffeTune Mixwright' && "
+            "return dialog?.querySelector('h2')?.textContent === 'mIV Sound' && "
             "dialog?.querySelector('.about-version')?.textContent === 'Version test' && "
             "dialog?.querySelector('.about-description')?.textContent === "
-            "'Multi-Effect Audio Plug-in for DAWs' && "
+            "'Audio effects for mImageViewer' && "
             "!!document.getElementById('vst-third-party-notices-button'); })()",
             kCompletionTimeout);
         const auto noticesStarted = aboutOpened && evaluate(
@@ -2054,7 +2061,7 @@ int main(const int argc, char **argv) {
         aboutNoticesReachable = noticesStarted && waitForJavascript(
             "(() => { const text = document.querySelector("
             "'.vst-third-party-notices-content')?.textContent || ''; "
-            "return text.startsWith('EffeTune Mixwright - Third-Party Notices') && "
+            "return text.startsWith('mIV Sound - Third-Party Notices') && "
             "text.trimEnd().endsWith("
             "'VST is a registered trademark of Steinberg Media Technologies GmbH.'); })()",
             kCompletionTimeout);
@@ -2073,29 +2080,31 @@ int main(const int argc, char **argv) {
             ignored) && ignored == "true";
         const auto appHelpDeadline =
             std::chrono::steady_clock::now() + kCompletionTimeout;
-        while (smokeState.externalAppHelpCalls.load(std::memory_order_relaxed) == 0 &&
+        while (appHelpStarted && smokeState.externalAppHelpCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < appHelpDeadline) {
           pumpMessages();
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
-        const auto githubStarted = appHelpStarted && evaluate(
+        // Exercise each action even if a different link's assertion fails.
+        const auto githubStarted = aboutNoticesReachable && evaluate(
             "(() => { const menu = document.getElementById('settingsMenu'); "
+            "if (!menu?.classList.contains('show')) "
             "document.getElementById('settingsMenuButton')?.click(); "
             "const github = document.getElementById('githubSettingsButton'); "
-            "if (!menu?.classList.contains('show') || github?.textContent !== 'GitHub') "
+            "if (!menu?.classList.contains('show') || "
+            "github?.textContent !== 'Based on EffeTune Mixwright by Frieve') "
             "return false; github.click(); return !menu.classList.contains('show'); })()",
             ignored) && ignored == "true";
         const auto githubDeadline =
             std::chrono::steady_clock::now() + kCompletionTimeout;
-        while (smokeState.externalGitHubCalls.load(std::memory_order_relaxed) == 0 &&
+        while (githubStarted && smokeState.externalGitHubCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < githubDeadline) {
           pumpMessages();
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
 
-        const auto productionDocumentationTarget = githubStarted &&
-            smokeState.externalAppHelpCalls.load(std::memory_order_relaxed) == 1 && evaluate(
+        const auto productionDocumentationTarget = evaluate(
             "window.uiManager?.getLocalizedDocPath('/plugins/analyzer#level-meter') === "
             "'https://effetune.frieve.com/docs/i18n/ja/plugins/analyzer.html#level-meter'",
             ignored) && ignored == "true";
@@ -2106,26 +2115,24 @@ int main(const int argc, char **argv) {
             ignored) && ignored == "true";
         const auto externalHelpDeadline =
             std::chrono::steady_clock::now() + kCompletionTimeout;
-        while (smokeState.externalHelpCalls.load(std::memory_order_relaxed) == 0 &&
+        while (externalHelpStarted && smokeState.externalHelpCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < externalHelpDeadline) {
           pumpMessages();
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        const auto remappedExternalHelpStarted = externalHelpStarted &&
-            smokeState.externalHelpCalls.load(std::memory_order_relaxed) == 1 && evaluate(
+        const auto remappedExternalHelpStarted = evaluate(
             "window.electronAPI.openExternalUrl("
             "'https://effetune-mixwright.localhost/docs/i18n/ja/plugins/"
             "analyzer.md#level-meter'); true",
             ignored) && ignored == "true";
         const auto remappedExternalHelpDeadline =
             std::chrono::steady_clock::now() + kCompletionTimeout;
-        while (smokeState.remappedExternalHelpCalls.load(std::memory_order_relaxed) == 0 &&
+        while (remappedExternalHelpStarted && smokeState.remappedExternalHelpCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < remappedExternalHelpDeadline) {
           pumpMessages();
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        const auto externalAiStarted = remappedExternalHelpStarted &&
-            smokeState.remappedExternalHelpCalls.load(std::memory_order_relaxed) == 1 && evaluate(
+        const auto externalAiStarted = evaluate(
             "(() => { const item = document.querySelector('.pipeline-item[data-plugin-id=\"' + "
             "window.__vstLanguagePluginId + '\"]'); const ai = item?.querySelector('.ai-button'); "
             "if (!ai) return false; ai.click(); "
@@ -2136,7 +2143,7 @@ int main(const int argc, char **argv) {
             ignored) && ignored == "true";
         const auto externalAiDeadline =
             std::chrono::steady_clock::now() + kCompletionTimeout;
-        while (smokeState.externalAiCalls.load(std::memory_order_relaxed) == 0 &&
+        while (externalAiStarted && smokeState.externalAiCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < externalAiDeadline) {
           pumpMessages();
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
@@ -2149,6 +2156,23 @@ int main(const int argc, char **argv) {
             smokeState.remappedExternalHelpCalls.load(std::memory_order_relaxed) == 1 &&
             smokeState.externalAiCalls.load(std::memory_order_relaxed) == 1 &&
             smokeState.invalidExternalDocumentationCalls.load(std::memory_order_relaxed) == 0;
+        auto linkChecks = choc::value::createObject({});
+        const auto recordLink = [&](const char *name, const bool started,
+                                    const std::atomic_uint32_t &calls) {
+          auto result = choc::value::createObject({});
+          result.addMember("started", started);
+          result.addMember("calls", static_cast<std::int64_t>(calls.load(std::memory_order_relaxed)));
+          linkChecks.addMember(name, std::move(result));
+        };
+        recordLink("appHelp", appHelpStarted, smokeState.externalAppHelpCalls);
+        recordLink("upstreamCredit", githubStarted, smokeState.externalGitHubCalls);
+        recordLink("effectHelp", externalHelpStarted, smokeState.externalHelpCalls);
+        recordLink("remappedHelp", remappedExternalHelpStarted, smokeState.remappedExternalHelpCalls);
+        recordLink("ai", externalAiStarted, smokeState.externalAiCalls);
+        linkChecks.addMember("documentationTarget", productionDocumentationTarget);
+        linkChecks.addMember("invalid", static_cast<std::int64_t>(
+            smokeState.invalidExternalDocumentationCalls.load(std::memory_order_relaxed)));
+        std::cout << "External link routing: " << choc::json::toString(linkChecks) << '\n';
 
         const auto bypassCallsBefore =
             smokeState.masterBypassCalls.load(std::memory_order_relaxed);
@@ -2393,7 +2417,7 @@ int main(const int argc, char **argv) {
               if (!fallbackWebView.evaluate(
                       "document.documentElement.dataset.effetuneLoadError === "
                       "'missing-assets' && document.body?.innerText.includes("
-                      "'Reinstall the complete EffeTune Mixwright.vst3 bundle')",
+                      "'Reinstall the complete mIV Sound.vst3 bundle')",
                       [&](std::string error, std::string result) {
                         missingResourceGuidanceShown =
                             error.empty() && result == "true";
@@ -2663,7 +2687,63 @@ int main(const int argc, char **argv) {
   }
   UnregisterClassW(className, instance);
 
-  if (!webViewProfile.cleanup()) {
+  const bool profileCleaned = webViewProfile.cleanup();
+  // Print every verdict before the first failing return, including checks that
+  // follow external links. A failure must not hide storage/lifecycle evidence.
+  auto checkpointSummary = choc::value::createObject({});
+  const std::pair<const char *, bool> checkpoints[] = {
+      {"profileCleaned", profileCleaned},
+      {"offThreadUiTeardown", offThreadUiTeardownCompleted},
+      {"dispatcherIdentity", dispatcherIdentityProtected},
+      {"attached", attached},
+      {"nativeBridge", smokeState.hostInfoCalls.load(std::memory_order_relaxed) > 0},
+      {"uiReady", uiReady.load(std::memory_order_acquire)},
+      {"isolatedWebOrigin", isolatedWebOrigin},
+      {"telemetry", telemetryDelivered},
+      {"spectrumOverlay", spectrumOverlayRendered},
+      {"amRadioHud", amRadioHudDisplayed},
+      {"dynamicLatency", dynamicLatencyServiced},
+      {"nativePerformanceStatus", nativePerformanceStatusVisible},
+      {"historyRestore", historyUsedSingleNativeRestore},
+      {"updatePluginOwnership", updatePluginRoutedByOwnership},
+      {"unavailableEffectWarning", unsupportedStateWarningShown},
+      {"hiddenContext", hiddenContextSynchronized},
+      {"hiddenTelemetryDiscarded", hiddenTelemetryDiscarded},
+      {"contextMenuDisabled", contextMenuDisabled},
+      {"homeKey", homeKeyReservedForHost},
+      {"clipboard", clipboardReachable},
+      {"libraryEntriesDisabled", libraryEntriesDisabled},
+      {"headerControls", headerControlsAreVstSpecific},
+      {"visualizerNavigation", visualizerNavigationWorks},
+      {"configCategories", configDialogCategoriesValid},
+      {"languageChanged", languageChangedImmediately},
+      {"measurementImport", measurementImportAvailable},
+      {"sfzAndGuitarIntegration", upstream213IntegrationValid},
+      {"aboutNotices", aboutNoticesReachable},
+      {"externalLinks", externalLinksRouted},
+      {"masterBypass", masterToggleReachedNative},
+      {"defaultViewport", defaultViewportFits},
+      {"editorOwnership", editorOwnershipRespected},
+      {"reattachedFreshWebView", reattachedWithFreshWebView},
+      {"parentDestructionRecovery", recoveredAfterParentDestruction},
+      {"reopenedEditorRebuilt", reopenedReadyEditorWasRebuilt},
+      {"missingResourceFixture", missingResourceFixtureReady},
+      {"missingResourceCleanup", missingResourceFixtureCleanupSucceeded},
+      {"missingResourceGuidance", missingResourceGuidanceShown},
+      {"editorReady", editorReportedReady},
+      {"webviewDataFolderUsed", webViewDataFolderUsed},
+      {"mtaDiagnosed", multiThreadedApartmentDiagnosed},
+      {"initialisationTimeoutDiagnosed", initialisationTimeoutDiagnosed},
+      {"runtimeFailureDiagnosed", runtimeFailureDiagnosed},
+      {"delayedInitialisationRecovered", delayedInitialisationRecovered},
+      {"noPrematureEmptyRebuild", smokeState.prematureEmptyRebuildCalls.load(std::memory_order_relaxed) == 0}};
+  for (const auto &[name, passed] : checkpoints) checkpointSummary.addMember(name, passed);
+  const auto dataFolderUtf8 = (webViewProfile.path() / "webview").generic_u8string();
+  checkpointSummary.addMember("webviewDataFolder", std::string(
+      reinterpret_cast<const char *>(dataFolderUtf8.data()), dataFolderUtf8.size()));
+  std::cout << "WebView smoke checkpoints: " << choc::json::toString(checkpointSummary) << '\n';
+
+  if (!profileCleaned) {
     std::cerr << "WebView2 child processes did not release the isolated profile: "
               << webViewProfile.path().string() << '\n';
     return 1;
@@ -2846,6 +2926,10 @@ int main(const int argc, char **argv) {
   }
   if (!editorReportedReady) {
     std::cerr << "A working editor did not report a ready WebView status\n";
+    return 1;
+  }
+  if (!webViewDataFolderUsed) {
+    std::cerr << "The ready editor did not create its MIV_SOUND_DATA_DIR/webview folder\n";
     return 1;
   }
   if (!multiThreadedApartmentDiagnosed) {

@@ -184,7 +184,7 @@
 
   window.__effetuneHostCall = async (type, payload = {}) => {
     if (typeof window.vst_hostMessage !== 'function') {
-      throw new Error('The EffeTune Mixwright native bridge is unavailable');
+      throw new Error('The mIV Sound native bridge is unavailable');
     }
     const result = await window.vst_hostMessage(JSON.stringify({ type, payload }));
     if (!result || result.ok !== true) {
@@ -313,6 +313,7 @@
     if (backupExportActive) void window.__effetuneHostCall('backup/exportCancel').catch(() => {});
   });
   const productionUrl = new URL('https://effetune.frieve.com/');
+  const helpUrl = new URL('https://mikage.to/mimageviewer/manual/effetune.html');
   const githubUrl = new URL('https://github.com/Frieve-A/effetune-mixwright');
   const normalizeExternalUrl = value => {
     const source = String(value || '');
@@ -385,7 +386,7 @@
     await window.electronIntegration.showAboutDialog({ version: info.version });
 
     const description = document.querySelector('.about-dialog .about-description');
-    if (description) description.textContent = 'Multi-Effect Audio Plug-in for DAWs';
+    if (description) description.textContent = 'Audio effects for mImageViewer';
     const buttons = document.querySelector('.about-dialog .dialog-buttons');
     const closeButton = buttons?.querySelector('#close-button');
     if (!buttons || !closeButton || document.getElementById('vst-third-party-notices-button')) {
@@ -443,7 +444,7 @@
     openExternalUrl,
     showOpenDialog: async () => window.__effetuneHostCall('dialog/openPreset'),
     showSaveDialog: async options => window.__effetuneHostCall('dialog/savePreset', {
-      defaultName: options?.defaultPath?.split(/[\\/]/).pop() || 'preset.effetune_preset'
+      defaultName: options?.defaultPath?.split(/[\\/]/).pop() || 'mIV Sound.effetune_preset'
     }),
     onIPC: eventNoop,
     onExportPreset: eventNoop,
@@ -721,7 +722,7 @@
       githubButton.type = 'button';
       githubButton.className = 'settings-menu-item';
       githubButton.id = 'githubSettingsButton';
-      githubButton.textContent = 'GitHub';
+      githubButton.textContent = 'Based on EffeTune Mixwright by Frieve';
 
       const aboutButton = document.createElement('button');
       aboutButton.type = 'button';
@@ -741,7 +742,7 @@
       settingsMenuButton?.addEventListener('click', updateHelpLabels);
       helpButton.addEventListener('click', () => {
         settingsMenu.classList.remove('show');
-        void openExternalUrl(productionUrl).catch(() => {
+        void openExternalUrl(helpUrl).catch(() => {
           window.uiManager?.setError?.('Unable to open Help in the default browser.', true);
         });
       });

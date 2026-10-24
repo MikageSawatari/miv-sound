@@ -9,12 +9,12 @@ using namespace Steinberg;
 using namespace Steinberg::Vst;
 
 #if defined(EFFETUNE_AUTOMATION_HOST_GATE_FIXTURE)
-constexpr auto kPluginDisplayName = "EffeTune Mixwright Automation Host Gate";
+constexpr auto kPluginDisplayName = "mIV Sound Automation Host Gate";
 #else
-constexpr auto kPluginDisplayName = "EffeTune Mixwright";
+constexpr auto kPluginDisplayName = "mIV Sound";
 #endif
 
-BEGIN_FACTORY_DEF("Frieve", "https://github.com/Frieve-A/effetune", "")
+BEGIN_FACTORY_DEF("mImageViewer", "https://mikage.to/mimageviewer/", "")
 
 DEF_CLASS2(INLINE_UID_FROM_FUID(effetune::vst::plugin::kProcessorId),
            PClassInfo::kManyInstances, kVstAudioEffectClass, kPluginDisplayName, 0, "Fx",

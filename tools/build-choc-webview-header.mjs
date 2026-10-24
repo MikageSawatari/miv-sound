@@ -23,9 +23,15 @@ function replaceOnce(before, after) {
 replaceOnce('        std::function<void(choc::ui::WebView&)> webviewIsReady;',
   `        std::function<void(choc::ui::WebView&)> webviewIsReady;
 
+        /// Windows only: explicit WebView2 storage, preferred over the host default.
+        std::wstring userDataFolder;
+
         /// Windows only: reports a failed environment or controller creation.
         /// May run synchronously during construction or later on the owner STA.
         std::function<void(const std::string&)> webviewInitialisationError;`);
+
+replaceOnce('if (auto userDataFolder = getUserDataFolder(); ! userDataFolder.empty())',
+  'if (auto userDataFolder = options.userDataFolder.empty() ? getUserDataFolder() : options.userDataFolder; ! userDataFolder.empty())');
 
 replaceOnce(`                        createCoreWebView2EnvironmentWithOptions (nullptr, userDataFolder.c_str(), nullptr, eventHandler);
                         return true;`,

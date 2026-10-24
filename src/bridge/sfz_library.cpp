@@ -103,6 +103,7 @@ std::string randomId() {
 class RegistryLock {
 public:
   explicit RegistryLock(const fs::path &registry) {
+    require(!registry.empty(), "mIV Sound storage is unavailable");
     fs::create_directories(registry.parent_path());
     auto path = registry; path += ".lock";
 #if defined(_WIN32)

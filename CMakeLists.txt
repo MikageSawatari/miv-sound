@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(EffeTunePlugin VERSION 0.15.0 LANGUAGES C CXX)
+project(EffeTunePlugin VERSION 0.15.0.1 LANGUAGES C CXX)
 
 # CMake 4.1.0-rc1 can decode the Japanese MSVC /showIncludes prefix as
 # mojibake, which leaves Ninja with no header dependencies. Repair only that
@@ -42,12 +42,14 @@ if(EFFETUNE_AUTOMATION_HOST_GATE_FIXTURE)
     message(FATAL_ERROR
       "The automation host-gate fixture requires plug-in and test targets")
   endif()
-  set(EFFETUNE_PLUGIN_PACKAGE_NAME "EffeTune Mixwright Automation Host Gate")
+  set(EFFETUNE_PLUGIN_PACKAGE_NAME "mIV Sound Automation Host Gate")
+  set(EFFETUNE_PLUGIN_BUNDLE_IDENTIFIER "to.mikage.mivsound.automation-host-gate")
   add_compile_definitions(EFFETUNE_AUTOMATION_HOST_GATE_FIXTURE=1)
   message(WARNING
     "Building the non-shipping automation host-gate fixture with an isolated VST identity")
 else()
-  set(EFFETUNE_PLUGIN_PACKAGE_NAME "EffeTune Mixwright")
+  set(EFFETUNE_PLUGIN_PACKAGE_NAME "mIV Sound")
+  set(EFFETUNE_PLUGIN_BUNDLE_IDENTIFIER "to.mikage.mivsound.plugin")
 endif()
 
 if(EFFETUNE_BUILD_TESTS)

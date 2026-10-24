@@ -5,6 +5,7 @@
 namespace {
 
 int failureStage = 0;
+std::wstring lastUserDataFolder;
 ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *pending = nullptr;
 ICoreWebView2CreateCoreWebView2ControllerCompletedHandler *pendingController = nullptr;
 
@@ -42,6 +43,10 @@ extern "C" __declspec(dllexport) void SetFailureStage(const int stage) {
   failureStage = stage;
 }
 
+extern "C" __declspec(dllexport) const wchar_t *GetLastUserDataFolder() {
+  return lastUserDataFolder.c_str();
+}
+
 extern "C" __declspec(dllexport) HRESULT CompleteEnvironment() {
   auto *handler = std::exchange(pending, nullptr);
   if (handler == nullptr) return E_UNEXPECTED;
@@ -61,8 +66,9 @@ extern "C" __declspec(dllexport) HRESULT CompleteController() {
 }
 
 STDAPI CreateCoreWebView2EnvironmentWithOptions(
-    PCWSTR, PCWSTR, void *,
+    PCWSTR, PCWSTR userDataFolder, void *,
     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *handler) {
+  lastUserDataFolder = userDataFolder != nullptr ? userDataFolder : L"";
   if (failureStage == 0) return HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);
   if (pending != nullptr) return E_UNEXPECTED;
   pending = handler;

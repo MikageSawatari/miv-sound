@@ -1,6 +1,7 @@
 #define CHOC_FIND_WEBVIEW2LOADER_DLL \
   choc::file::DynamicLibrary(EFFETUNE_WEBVIEW_LOADER_FIXTURE)
 #include "choc/gui/choc_WebView.h"
+#include "bridge/data_directory.h"
 
 #include <iostream>
 #include <stdexcept>
@@ -23,20 +24,27 @@ int main() {
     const auto setStage = reinterpret_cast<void (*)(int)>(loader.findFunction("SetFailureStage"));
     const auto complete = reinterpret_cast<HRESULT (*)()>(loader.findFunction("CompleteEnvironment"));
     const auto completeController = reinterpret_cast<HRESULT (*)()>(loader.findFunction("CompleteController"));
+    const auto lastFolder = reinterpret_cast<const wchar_t *(*)()>(loader.findFunction("GetLastUserDataFolder"));
     expect(setStage != nullptr && complete != nullptr && completeController != nullptr,
            "load the WebView2 API fixture");
+    const auto directory = effetune::vst::soundDataDirectory();
+    expect(!directory.empty() && lastFolder != nullptr, "isolated WebView test storage is configured");
+    const auto userDataFolder = (directory / "webview").wstring();
 
     for (int stage = 0; stage < 5; ++stage) {
       setStage(stage);
       int errors = 0;
       int ready = 0;
       choc::ui::WebView::Options options;
+      options.userDataFolder = userDataFolder;
       options.webviewInitialisationError = [&](const std::string &error) {
         expect(!error.empty(), "preserve the native creation diagnostic");
         ++errors;
       };
       options.webviewIsReady = [&](choc::ui::WebView &) { ++ready; };
       choc::ui::WebView view(options);
+      expect(lastFolder() == userDataFolder,
+             "explicit userDataFolder overrides the host APPDATA default at the WebView2 API");
       if (stage == 0) {
         expect(!view.loadedOK() && errors == 1, "report a synchronous loader failure");
       } else {
@@ -56,6 +64,7 @@ int main() {
     int retiredErrors = 0;
     {
       choc::ui::WebView::Options options;
+      options.userDataFolder = userDataFolder;
       options.webviewInitialisationError = [&](const std::string &) { ++retiredErrors; };
       choc::ui::WebView retired(options);
       expect(retired.loadedOK(), "start a creation that outlives its WebView");
@@ -65,6 +74,7 @@ int main() {
     setStage(3);
     {
       choc::ui::WebView::Options options;
+      options.userDataFolder = userDataFolder;
       options.webviewInitialisationError = [&](const std::string &) { ++retiredErrors; };
       choc::ui::WebView retired(options);
       (void)complete();

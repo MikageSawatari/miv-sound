@@ -5,19 +5,20 @@ import { fileURLToPath } from 'node:url';
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(scriptDirectory, '..');
-const productName = 'EffeTune Mixwright';
+const productName = 'mIV Sound';
+const upstreamCredit = 'Based on EffeTune / EffeTune Mixwright by Frieve';
 const vstTourLocales = {
   en: {
-    'tour.step.welcome.body': 'Take a short tour to learn how to process audio from your DAW, add effects, and adjust your sound.',
-    'tour.step.sound.body': 'Insert Mixwright on a track or bus in your DAW, then start playback or enable input monitoring. The DAW supplies the audio.',
+    'tour.step.welcome.body': 'Take a short tour to learn how to add effects and adjust the sound of videos and music in mImageViewer.',
+    'tour.step.sound.body': 'Play a video or music in mImageViewer. mIV Sound processes its audio as it plays.',
     'tour.step.views.title': 'Explore the sound',
     'tour.step.views.body': 'Visualizer displays the native pipeline output. Use Effect Pipeline to return to your effects.',
     'tour.step.settings.body': 'Open Settings for Configuration (language, theme, startup view, and controllers) and Backup / Restore.',
     'tour.step.help.body': 'Open Settings and choose Help to read the guide. Each effect also has a ? button. Choose Take the tour in Settings to see this tour again.'
   },
   ja: {
-    'tour.step.welcome.body': 'DAWの音声を処理し、エフェクトを追加して音を調整する方法を紹介します。',
-    'tour.step.sound.body': 'DAWのトラックやバスにMixwrightを挿入し、再生または入力モニターを開始してください。音声はDAWから供給されます。',
+    'tour.step.welcome.body': 'mImageViewer で再生する動画や音楽にエフェクトを追加して、音を調整する方法を紹介します。',
+    'tour.step.sound.body': 'mImageViewer で動画や音楽を再生してください。再生中の音声を mIV Sound が処理します。',
     'tour.step.views.title': '音を見てみよう',
     'tour.step.views.body': 'Visualizerでネイティブパイプラインの出力を表示できます。エフェクト編集に戻るにはEffect Pipelineを使います。',
     'tour.step.settings.body': '設定からConfiguration（言語、テーマ、起動画面、コントローラー）やバックアップ／復元を開けます。',
@@ -43,8 +44,16 @@ const vstLocaleAdditions = {
 
 function applyProductBranding(sourceText) {
   return sourceText
-    .replaceAll('Frieve EffeTune', productName)
-    .replace(/EffeTune(?! Mixwright)/g, productName);
+    // Credits are added after branding, so these upstream names remain intact.
+    .replace(/(?:Frieve )?EffeTune(?: Mixwright)?|Mixwright/g, productName);
+}
+
+function replaceOnce(sourceText, before, after) {
+  const count = typeof before === 'string'
+    ? sourceText.split(before).length - 1
+    : [...sourceText.matchAll(new RegExp(before.source, before.flags.includes('g') ? before.flags : before.flags + 'g'))].length;
+  if (count !== 1) throw new Error(`Expected exactly one upstream match: ${before} (found ${count})`);
+  return sourceText.replace(before, after);
 }
 
 function argument(name) {
@@ -79,15 +88,38 @@ await mkdir(output, { recursive: true });
 for (const entry of ['js', 'plugins', 'presets', 'images', 'css']) {
   await cp(path.join(source, entry), path.join(output, entry), { recursive: true });
 }
-// Omit the player-lyrics system preset without touching saved or imported layouts.
+// Replace every bundled upstream app icon; keep functional diagrams intact.
+const brandingImages = (await readdir(path.join(projectRoot, 'branding')))
+  .filter(entry => /\.(png|ico)$/.test(entry));
+for (const entry of brandingImages) {
+  await cp(path.join(projectRoot, 'branding', entry), path.join(output, 'images', entry));
+}
+// These desktop/web marketing images are unused by the plug-in.
+for (const entry of ['ogp.jpg', 'screenshot.png', 'screenshot-narrow.png', 'video_thumbnail.jpg']) {
+  await rm(path.join(output, 'images', entry));
+}
+if (JSON.stringify((await readdir(path.join(output, 'images'))).sort()) !==
+    JSON.stringify([...brandingImages, 'bus_function.png'].sort())) {
+  throw new Error('The pinned upstream image set has changed; review its branding');
+}
+// Omit unavailable system presets without touching saved or imported layouts.
 const visualizerPresetsDirectory = path.join(output, 'presets', 'visualizer');
+const omittedPresetCounts = { 'Lyric Stage': 0, 'Counter Gallery': 0 };
 for (const entry of await readdir(visualizerPresetsDirectory)) {
   if (!entry.endsWith('.json')) continue;
   const presetPath = path.join(visualizerPresetsDirectory, entry);
   const presets = JSON.parse(await readText(presetPath));
-  if (!Object.hasOwn(presets, 'Lyric Stage')) continue;
-  delete presets['Lyric Stage'];
-  await writeFile(presetPath, JSON.stringify(presets, null, 2) + '\n', 'utf8');
+  let changed = false;
+  for (const name of ['Lyric Stage', 'Counter Gallery']) {
+    if (!Object.hasOwn(presets, name)) continue;
+    ++omittedPresetCounts[name];
+    changed = true;
+    delete presets[name];
+  }
+  if (changed) await writeFile(presetPath, JSON.stringify(presets, null, 2) + '\n', 'utf8');
+}
+if (omittedPresetCounts['Lyric Stage'] !== 2 || omittedPresetCounts['Counter Gallery'] !== 1) {
+  throw new Error('The pinned Visualizer system preset set has changed');
 }
 // Shared modal/controller styling lives in the upstream library stylesheet.
 for (const entry of ['effetune-mobile.css', 'pipeline-analyzer.css']) {
@@ -119,7 +151,8 @@ if (!html.includes(upstreamDocumentTitle) || !html.includes(upstreamHeaderTitle)
     !html.includes(upstreamFooterTitle) || !html.includes(upstreamIconAlt)) {
   throw new Error('Unable to locate the upstream EffeTune branding');
 }
-html = applyProductBranding(html)
+html = replaceOnce(applyProductBranding(html), '(C) Frieve 2025, 2026',
+  `(C) Frieve 2025, 2026 · ${upstreamCredit}`)
   .replace(/\s*<link rel="stylesheet" href="css\/effetune-mobile\.css">/g, '')
   .replace('</head>', '    <link rel="stylesheet" href="css/effetune-library.css">\n</head>')
   .replace(/\s*<link rel="manifest" href="manifest\.json">/g, '')
@@ -371,22 +404,15 @@ if (visualizerView.split(playerMetadata).length - 1 !== 1) {
 visualizerView = visualizerView.replace(playerMetadata, `    metadata() {
         return this.uiManager.audioManager.getNowPlayingMetadata();
     }`);
-// The native host owns project transport. Neither the excluded player nor an
-// editor-local wall clock can represent stopped playback, seeks, or loops.
+// mIV's project sample count is not the audible media position. Imported
+// counters retain their type and editor, but receive no position until a media clock is available.
 const counterProvider = /    counters\(now = performance\.now\(\)\) \{[\s\S]*?\n    \}\n(?=    resetCounter)/;
 const videoProvider = /    videoFrame\(\) \{[\s\S]*?\n    \}\n(?=    async openPresets)/;
-if (!counterProvider.test(visualizerView) || !videoProvider.test(visualizerView)) {
-  throw new Error('Unable to locate the Visualizer transport and video providers');
-}
-visualizerView = visualizerView.replace(counterProvider, `    counters(now = performance.now()) {
-        const transport = this.uiManager.audioManager.getHostTransport();
-        return new Map(this.layout.items.filter(item => item.type === 'counter').map(item => [item.id, {
-            time: transport ? Math.max(0, transport.projectTimeSamples / transport.sampleRate) : 0,
-            trackIndex: 0, external: false, playing: transport?.playing === true,
-            speed: 1, source: 'vst-host-project', stamp: now / 1000
-        }]));
+visualizerView = replaceOnce(visualizerView, counterProvider, `    counters() {
+        return new Map();
     }
-`).replace(videoProvider, '    videoFrame() { return null; }\n');
+`);
+visualizerView = replaceOnce(visualizerView, videoProvider, '    videoFrame() { return null; }\n');
 for (const integration of [
   "import { SynchronizedVideo } from '../ui/audio-player/synchronized-video.js';\n",
   "import { hasPlaybackRegionDescriptor } from '../ui/audio-player/playback-region.js';\n",
@@ -431,7 +457,7 @@ if (visualizerEditor.split(visualizerAddChoices).length - 1 !== 1) {
   throw new Error('Unable to locate Visualizer add-item choices');
 }
 visualizerEditor = visualizerEditor.replace(visualizerAddChoices,
-  "byLabel(ITEM_TYPES.filter(type => type !== 'lyrics' && type !== 'video').map(type =>");
+  "byLabel(ITEM_TYPES.filter(type => type !== 'lyrics' && type !== 'video' && type !== 'counter').map(type =>");
 const visualizerChannels = `            const channels = [['', '1–2'], ['L', 'L'], ['R', 'R'], ...Array.from({ length: 7 }, (_, i) => [\`\${i * 2 + 3}\${i * 2 + 4}\`, \`\${i * 2 + 3}–\${i * 2 + 4}\`]), ...Array.from({ length: 16 }, (_, i) => [\`\${i + 1}\`, \`\${i + 1}\`])];
             this.field(properties, this.t('visualizer.channel', 'Channel'), 'select', item.channel || '', value => { item.channel = value || null; this.changed(); }, { values: channels });`;
 if (visualizerEditor.split(visualizerChannels).length - 1 !== 1) {
@@ -857,16 +883,41 @@ electronIntegration = electronIntegration.replace(documentationLinkPatch,
 
   /**
    * Initialize event listeners`);
-electronIntegration = applyProductBranding(electronIntegration);
+electronIntegration = replaceOnce(applyProductBranding(electronIntegration),
+  'Copyright © Frieve 2025, 2026', `Copyright © Frieve 2025, 2026<br>${upstreamCredit}`);
 await writeFile(electronIntegrationPath, electronIntegration, 'utf8');
 
 for (const relativePath of [
-  ['js', 'electron', 'presetIntegration.js'],
   ['js', 'ui', 'pipeline', 'pipeline-ai-dialog.js']
 ]) {
   const assetPath = path.join(output, ...relativePath);
   const assetSource = await readText(assetPath);
   await writeFile(assetPath, applyProductBranding(assetSource), 'utf8');
+}
+
+// Brand only reachable plug-in strings. Do not rewrite desktop-only modules,
+// internal identifiers, font IDs, or the backup format identifier.
+for (const [relativePath, originals] of [
+  ['js/electron/presetIntegration.js', [
+    /title: 'Export Preset',[\s\S]*?name: 'EffeTune Preset Files'/,
+    /title: 'Import Preset',[\s\S]*?name: 'EffeTune Preset Files'/
+  ]],
+  ['js/ui-manager.js', ['Starting EffeTune…']],
+  ['js/startup.js', ['EffeTune could not start. Reload the app and try again.']],
+  ['js/visualizer/visualizer-view.js', ['This Visualizer link could not be read. It may be incomplete or made with a newer version of EffeTune. Copy the whole link again, or update EffeTune.']],
+  ['js/visualizer/visualizer-feed.js', ['EffeTune Visualizer']],
+  ['js/midi/midi-mapping-dialog.js', ['The MIDI system did not respond. MIDI stays off until EffeTune is restarted; keyboard and gamepad mappings keep working.']],
+  ['js/user-data-backup/service.js', ['`EffeTune-${new Date().toISOString().slice(0, 10)}.effetune_backup`']],
+  ['js/user-data-backup/dialog.js', ['Move saved presets, impulse responses, and measurements between EffeTune installations.', 'That backup file could not be opened. Choose an EffeTune backup file and try again.']],
+  ['js/user-data-backup/archive.js', ['Choose an EffeTune backup file.', 'This backup uses a newer format. Update EffeTune and try again.']]
+]) {
+  const assetPath = path.join(output, relativePath);
+  let text = await readText(assetPath);
+  for (const original of originals) {
+    text = replaceOnce(text, original, match => applyProductBranding(match)
+      .replace("'preset'}.effetune_preset", "'mIV Sound'}.effetune_preset"));
+  }
+  await writeFile(assetPath, text, 'utf8');
 }
 
 const localesPath = path.join(output, 'js', 'locales');
@@ -879,8 +930,7 @@ for (const localeFile of await readdir(localesPath)) {
   for (const [key, value] of Object.entries(vstTourLocales[path.basename(localeFile, '.json5')] || vstTourLocales.en)) {
     const field = `${JSON.stringify(key)}:`;
     const expression = new RegExp(`(${field.replaceAll('.', '\\.')}\\s*)"(?:[^"\\\\]|\\\\.)*"`);
-    if (!expression.test(localized)) throw new Error(`Unable to adapt tour locale: ${localeFile}: ${key}`);
-    localized = localized.replace(expression, (_match, prefix) => prefix + JSON.stringify(value));
+    localized = replaceOnce(localized, expression, (_match, prefix) => prefix + JSON.stringify(value));
   }
   const additions = vstLocaleAdditions[path.basename(localeFile, '.json5')];
   if (additions) {

@@ -98,6 +98,25 @@ for (const relative of requiredFiles) {
 if (notices !== sourceNotices) {
   throw new Error('The generated UI does not contain the complete third-party notices');
 }
+for (const license of ['LICENSE', 'external/effetune/LICENSE']) {
+  const requiredLicense = (await readFile(path.join(projectRoot, license), 'utf8')).replaceAll('\r\n', '\n').trim();
+  if (!notices.replaceAll('\r\n', '\n').includes(requiredLicense)) {
+    throw new Error(`Bundled notices must preserve the complete ${license}`);
+  }
+}
+if (!notices.startsWith('mIV Sound - Third-Party Notices\nA modified version of EffeTune Mixwright by Frieve')) {
+  throw new Error('Modified-version credit is missing from the notices');
+}
+for (const entry of await readdir(path.join(projectRoot, 'branding'))) {
+  if (!/\.(png|ico)$/.test(entry)) continue;
+  const original = await readFile(path.join(projectRoot, 'branding', entry));
+  const bundled = await readFile(path.join(assets, 'images', entry));
+  if (!original.equals(bundled)) throw new Error(`Bundled mIV icon differs: ${entry}`);
+}
+for (const source of [html, electronIntegration]) {
+  if (!source.includes('Based on EffeTune / EffeTune Mixwright by Frieve') ||
+      !source.includes('Frieve 2025, 2026')) throw new Error('Upstream visible credit is missing');
+}
 const sharedDialogCss = await readFile(path.join(assets, 'css', 'effetune-library.css'), 'utf8');
 const upstreamDialogCss = await readFile(path.join(upstreamSource, 'css', 'effetune-library.css'), 'utf8');
 if (sharedDialogCss !== upstreamDialogCss ||
@@ -107,12 +126,12 @@ if (sharedDialogCss !== upstreamDialogCss ||
 
 const requiredHtml = [
   "default-src 'self' blob: data:",
-  '<title>EffeTune Mixwright</title>',
-  '<h1>EffeTune Mixwright<img',
-  'EffeTune Mixwright version <span id="app-version"></span>',
-  '<meta property="og:site_name" content="EffeTune Mixwright">',
-  '<meta name="twitter:title" content="EffeTune Mixwright - Real-time Audio Effect Processor">',
-  'alt="EffeTune Mixwright Icon"',
+  '<title>mIV Sound</title>',
+  '<h1>mIV Sound<img',
+  'mIV Sound version <span id="app-version"></span>',
+  '<meta property="og:site_name" content="mIV Sound">',
+  '<meta name="twitter:title" content="mIV Sound - Real-time Audio Effect Processor">',
+  'alt="mIV Sound Icon"',
   'vst-bootstrap.js',
   'js/startup.js',
   'href="css/effetune.css"',
@@ -162,7 +181,11 @@ for (const localeFile of await readdir(localesPath)) {
   ]);
 }
 for (const [label, source] of productBrandingSources) {
-  if (/Frieve EffeTune|EffeTune(?! Mixwright)/.test(source)) {
+  const withoutCredits = source.replaceAll('Based on EffeTune / EffeTune Mixwright by Frieve', '')
+    .replaceAll('Based on EffeTune Mixwright by Frieve', '')
+    .replaceAll('[EffeTune Mixwright]', '')
+    .replace(/^\s*\*.*$/gm, '');
+  if (/Frieve EffeTune|EffeTune|Mixwright/.test(withoutCredits)) {
     throw new Error(`${label} retains legacy product branding`);
   }
 }
@@ -346,13 +369,14 @@ if (bootstrap.includes('.pipeline-header-right')) {
 if (!bootstrap.includes("helpButton.id = 'helpSettingsButton';") ||
     !bootstrap.includes("[helpButton, 'menu.help.help', 'Help']") ||
     !bootstrap.includes("settingsMenuButton?.addEventListener('click', updateHelpLabels);") ||
-    !bootstrap.includes('void openExternalUrl(productionUrl).catch') ||
+    !bootstrap.includes('void openExternalUrl(helpUrl).catch') ||
+    !bootstrap.includes("const helpUrl = new URL('https://mikage.to/mimageviewer/manual/effetune.html');") ||
     !bootstrap.includes('settingsMenu.appendChild(helpButton);')) {
   throw new Error('The VST settings menu Help action is missing or bypasses the native host');
 }
 if (!bootstrap.includes("const githubUrl = new URL('https://github.com/Frieve-A/effetune-mixwright');") ||
     !bootstrap.includes("githubButton.id = 'githubSettingsButton';") ||
-    !bootstrap.includes("githubButton.textContent = 'GitHub';") ||
+    !bootstrap.includes("githubButton.textContent = 'Based on EffeTune Mixwright by Frieve';") ||
     !bootstrap.includes('void openExternalUrl(githubUrl).catch') ||
     !bootstrap.includes('settingsMenu.appendChild(githubButton);')) {
   throw new Error('The untranslated VST settings menu GitHub action is missing or bypasses the native host');
@@ -360,7 +384,7 @@ if (!bootstrap.includes("const githubUrl = new URL('https://github.com/Frieve-A/
 if (!bootstrap.includes("aboutButton.id = 'aboutSettingsButton';") ||
     !bootstrap.includes("[aboutButton, 'menu.help.about', 'About']") ||
     !bootstrap.includes("window.electronIntegration.showAboutDialog({ version: info.version })") ||
-    !bootstrap.includes("description.textContent = 'Multi-Effect Audio Plug-in for DAWs'") ||
+    !bootstrap.includes("description.textContent = 'Audio effects for mImageViewer'") ||
     !bootstrap.includes("noticesButton.textContent = 'Third party notices';") ||
     !bootstrap.includes("fetch('THIRD-PARTY-NOTICES.txt')") ||
     !bootstrap.includes("overlay.querySelector('.vst-third-party-notices-content').textContent = notices") ||
@@ -387,11 +411,10 @@ if ((await readdir(path.join(assets, 'js', 'ui', 'double-blind-test'))).join(','
 const visualizerView = await readFile(path.join(assets, 'js', 'visualizer', 'visualizer-view.js'), 'utf8');
 const visualizerEditor = await readFile(path.join(assets, 'js', 'visualizer', 'visualizer-editor.js'), 'utf8');
 if (visualizerView.includes('ui/audio-player/') || visualizerView.includes('this.video.') ||
-    !visualizerView.includes('this.uiManager.audioManager.getHostTransport()') ||
-    !visualizerView.includes("source: 'vst-host-project'") ||
-    !visualizerView.includes('trackIndex: 0, external: false') ||
-    !visualizerEditor.includes("type !== 'lyrics' && type !== 'video'")) {
-  throw new Error('Visualizer does not use native project transport or still exposes excluded Video');
+    visualizerView.includes('this.uiManager.audioManager.getHostTransport()') ||
+    !visualizerView.includes('counters() {\n        return new Map();\n    }') ||
+    !visualizerEditor.includes("type !== 'lyrics' && type !== 'video' && type !== 'counter'")) {
+  throw new Error('Visualizer still exposes Counter/Video or supplies misleading project transport');
 }
 if (pipelineManager.includes("from './pipeline/file-processor.js'") ||
     pipelineManager.includes('new FileProcessor(') ||

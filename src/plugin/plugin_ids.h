@@ -8,11 +8,11 @@
 namespace effetune::vst::plugin {
 
 #if defined(EFFETUNE_AUTOMATION_HOST_GATE_FIXTURE)
-inline const Steinberg::FUID kProcessorId(0xA74D1C62, 0x39E84751, 0xB6126D8F,
-                                         0x2C45E093);
+inline const Steinberg::FUID kProcessorId(0x8A41B5DC, 0x7E734D04, 0xB8DB87F7,
+                                         0x017CB379);
 #else
-inline const Steinberg::FUID kProcessorId(0x72A0F755, 0xE18B4F5E, 0xA1D2F16B,
-                                         0x25BB0419);
+inline const Steinberg::FUID kProcessorId(0x1ED3877F, 0xD2CE46D6, 0x896338DD,
+                                         0xBBE03E72);
 #endif
 inline constexpr Steinberg::Vst::ParamID kBypassParameterId = 0;
 inline constexpr Steinberg::Vst::ParamID kFirstAutomationParameterId = 0x00010000u;

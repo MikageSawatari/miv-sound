@@ -64,7 +64,7 @@ std::optional<std::filesystem::path> runWindowsDialog(const CLSID &classId,
     (void)dialog->SetOptions(options | FOS_PICKFOLDERS | FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST);
   } else {
     const COMDLG_FILTERSPEC filter[] = {
-        {backup ? L"EffeTune Mixwright backup" : L"EffeTune Mixwright preset",
+        {backup ? L"mIV Sound backup" : L"mIV Sound preset",
          backup ? L"*.effetune_backup" : L"*.effetune_preset"}, {L"All files", L"*.*"}};
     (void)dialog->SetFileTypes(static_cast<UINT>(std::size(filter)), filter);
     (void)dialog->SetFileTypeIndex(1);
