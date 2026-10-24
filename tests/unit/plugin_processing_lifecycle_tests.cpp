@@ -12081,5 +12081,6 @@ int runTestBody() {
 }
 
 int main() {
-  return effetune::vst::testing::runWebViewTest([] { return runTestBody(); });
+  return effetune::vst::testing::runWebViewTest([] { return runTestBody(); },
+      std::chrono::seconds(120), effetune::vst::pendingWebViewCallbacksForTesting);
 }

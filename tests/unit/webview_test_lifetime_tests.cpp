@@ -11,6 +11,18 @@ void expect(bool condition, const char *message) {
   if (!condition) throw std::runtime_error(message);
 }
 
+void testModuleCallbackObserver(const char *path) {
+  const auto module = LoadLibraryA(path);
+  expect(module != nullptr, "load the plugin to verify its read-only counter without creating any WebView");
+  TestCleanup unload([&] { FreeLibrary(module); });
+  const auto observer = moduleWebViewCallbackCounter(module);
+  expect(observer() == 0, "the actual plugin DLL exports a working zero-valued callback observer");
+  const auto previous = localWebViewCallbackCounter;
+  TestCleanup restore([&] { localWebViewCallbackCounter = previous; });
+  localWebViewCallbackCounter = [] { return std::uint64_t{3}; };
+  expect(observer() == 3, "DLL observation includes callbacks from the EXE image as well");
+}
+
 void testPauseReleaseBeforeJoin() {
   std::atomic_bool paused{true}, entered{false}, finished{false};
   int releases = 0;
@@ -63,11 +75,109 @@ void testFailedWaitStillDrainsEveryProfile() {
   };
   expect(!waitForWebViewsExit({a, b}, std::chrono::milliseconds(100), hooks),
          "query error and elapsed deadline remain test failures after eventual clean exit");
-  expect(callsA == callsB && callsA >= 9 && now >= std::chrono::milliseconds(800) +
+  expect(callsA == callsB && callsA == 5 && now == std::chrono::milliseconds(400) +
              std::chrono::steady_clock::time_point{},
-         "wait continues beyond its deadline until BOTH profiles have exited and stayed quiet");
+         "wait continues beyond its deadline until BOTH profiles have exited, without a quiet-time guess");
   expect(order.find("AA") == std::string::npos && order.find("BB") == std::string::npos,
          "a query exception never skips later folders in the round");
+}
+
+void testLongQueryCannotBypassDeadline() {
+  std::chrono::steady_clock::time_point now{};
+  unsigned scans = 0, pauses = 0;
+  WebViewExitWaitHooks hooks;
+  hooks.now = [&] { return now; };
+  hooks.pump = [] {};
+  hooks.pause = [&] { ++pauses; };
+  hooks.scan = [&](const auto &) -> std::vector<DWORD> {
+    ++scans;
+    now += std::chrono::seconds(121);
+    return {};
+  };
+  expect(!waitForWebViewsExit({LR"(G:\slow-query)"}, std::chrono::seconds(120), hooks) &&
+             scans == 1 && pauses == 0,
+         "an empty result after a slow query still records the exceeded deadline before returning");
+}
+
+void testCallbackCompletionIsIndependentOfProcessVisibility() {
+  std::chrono::steady_clock::time_point now{};
+  bool complete = false;
+  unsigned scans = 0;
+  WebViewExitWaitHooks hooks;
+  hooks.now = [&] { return now; };
+  hooks.pause = [&] { now += std::chrono::milliseconds(100); };
+  hooks.pump = [&] {
+    if (now >= std::chrono::steady_clock::time_point{} + std::chrono::milliseconds(600)) complete = true;
+  };
+  hooks.scan = [&](const auto &) { ++scans; return std::vector<DWORD>{}; };
+  hooks.pendingCallbacks = [&] { return complete ? 0u : 1u; };
+  expect(waitForWebViewsExit({LR"(G:\callback-result)"}, std::chrono::seconds(2), hooks) &&
+             now == std::chrono::steady_clock::time_point{} + std::chrono::milliseconds(600) && scans == 7,
+         "pending completion prevents exit even after 500ms without any browser process");
+  complete = false;
+  hooks.pump = [&] {
+    if (now >= std::chrono::steady_clock::time_point{} + std::chrono::milliseconds(900)) complete = true;
+  };
+  expect(!waitForWebViewsExit({LR"(G:\callback-result)"}, std::chrono::milliseconds(200), hooks) && complete,
+         "a callback exceeding the deadline records failure but is still awaited");
+
+  scans = 0;
+  complete = false;
+  hooks.pump = [] {};
+  hooks.scan = [&](const auto &) {
+    ++scans;
+    if (scans == 1) complete = true; // callback starts a browser AFTER this empty scan
+    return scans == 2 ? std::vector<DWORD>{123} : std::vector<DWORD>{};
+  };
+  expect(waitForWebViewsExit({LR"(G:\scan-race)"}, std::chrono::seconds(2), hooks) && scans == 3,
+         "pending before a scan forces another round even if the callback completed during that scan");
+
+  bool missingExportRejected = false;
+  try { (void)moduleWebViewCallbackCounter(GetModuleHandleW(L"kernel32.dll"))(); }
+  catch (const std::runtime_error &) { missingExportRejected = true; }
+  expect(missingExportRejected, "a DLL lacking the required observer is never silently treated as drained");
+}
+
+void testWorkerUnwindPumpsOwnerSTA() {
+  struct State { DWORD owner = GetCurrentThreadId(); bool delivered = false; bool ownerThread = false; } state;
+  WNDCLASSW windowClass{};
+  windowClass.hInstance = GetModuleHandleW(nullptr);
+  windowClass.lpszClassName = L"mIVSoundWorkerJoinPumpTest";
+  windowClass.lpfnWndProc = [](HWND window, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT {
+    if (message == WM_APP + 1) {
+      auto &state = *reinterpret_cast<State *>(lParam);
+      state.delivered = true;
+      state.ownerThread = state.owner == GetCurrentThreadId();
+      return 1;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+  };
+  expect(RegisterClassW(&windowClass) != 0, "register the join-pump window");
+  TestCleanup unregister([&] { UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance); });
+  const auto window = CreateWindowExW(0, windowClass.lpszClassName, L"", 0, 0, 0, 0, 0,
+                                      HWND_MESSAGE, nullptr, windowClass.hInstance, nullptr);
+  expect(window != nullptr, "create the join-pump window");
+  TestCleanup destroy([&] { DestroyWindow(window); });
+  for (int mode = 0; mode < 3; ++mode) {
+    state.delivered = state.ownerThread = false;
+    std::atomic_bool completed{false};
+    bool injected = false;
+    try {
+      TestThread worker([&] {
+        DWORD_PTR result = 0;
+        completed.store(SendMessageTimeoutW(window, WM_APP + 1, 0, reinterpret_cast<LPARAM>(&state),
+            SMTO_ABORTIFHUNG | SMTO_BLOCK, 3000, &result) != 0 && result == 1);
+      });
+      if (mode == 0) worker.joinPumping();
+      else if (mode == 1) throw std::runtime_error("injected owner unwind");
+      else worker = TestThread([] {});
+    } catch (const std::runtime_error &error) {
+      expect(std::string(error.what()) == "injected owner unwind", "only catch the owner assertion");
+      injected = true;
+    }
+    expect(injected == (mode == 1) && state.delivered && state.ownerThread && completed.load(),
+           "explicit join, exception destruction and move assignment all pump the owner STA before join");
+  }
 }
 
 void testDrainKeepsModuleAndOwnerStateAlive() {
@@ -317,11 +427,16 @@ void testCommandLineQueryRaces() {
 }
 }
 
-int main() {
+int main(int argc, char **argv) {
   suppressCrtModalDialogs();
   try {
+    expect(argc == 2, "expected the plugin DLL path for read-only observer verification");
+    testModuleCallbackObserver(argv[1]);
     testScopedStorageEnvironment();
     testPauseReleaseBeforeJoin();
+    testWorkerUnwindPumpsOwnerSTA();
+    testLongQueryCannotBypassDeadline();
+    testCallbackCompletionIsIndependentOfProcessVisibility();
     testFailedWaitStillDrainsEveryProfile();
     testDrainKeepsModuleAndOwnerStateAlive();
     testTerminatingProcessPumpsOwnerSTA();

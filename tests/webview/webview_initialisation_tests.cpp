@@ -51,10 +51,14 @@ int main() {
     const auto setStage = reinterpret_cast<void (*)(int)>(loader.findFunction("SetFailureStage"));
     const auto complete = reinterpret_cast<HRESULT (*)()>(loader.findFunction("CompleteEnvironment"));
     const auto completeController = reinterpret_cast<HRESULT (*)()>(loader.findFunction("CompleteController"));
+    const auto completeScript = reinterpret_cast<HRESULT (*)()>(loader.findFunction("CompleteScript"));
+    const auto releasePending = reinterpret_cast<void (*)()>(loader.findFunction("ReleasePendingCallbacks"));
+    const auto pendingCallbacks = choc::ui::mivSoundTestPendingWebViewCallbacks;
     const auto lastFolder = reinterpret_cast<const wchar_t *(*)()>(loader.findFunction("GetLastUserDataFolder"));
     const auto stats = reinterpret_cast<const WebViewControllerFixtureStats *(*)()>(
         loader.findFunction("GetControllerStats"));
-    expect(setStage != nullptr && complete != nullptr && completeController != nullptr && stats != nullptr,
+    expect(setStage != nullptr && complete != nullptr && completeController != nullptr && stats != nullptr &&
+               completeScript != nullptr && releasePending != nullptr && pendingCallbacks() == 0,
            "load the WebView2 API fixture");
     const auto directory = effetune::vst::soundDataDirectory();
     expect(!directory.empty() && lastFolder != nullptr, "isolated WebView test storage is configured");
@@ -77,6 +81,7 @@ int main() {
       if (stage == 0) {
         expect(!view.loadedOK() && errors == 1, "report a synchronous loader failure");
       } else {
+        expect(pendingCallbacks() == 1, "environment completion is counted while creation is pending");
         expect(view.loadedOK() && !view.isReady() && errors == 0,
                "keep a pending creation distinct from a failure");
         (void)complete();
@@ -88,6 +93,7 @@ int main() {
       }
       expect(!view.isReady() && ready == 0, "a failed creation must never report ready");
     }
+    expect(pendingCallbacks() == 0, "all failed handlers have completed or been released");
 
     setStage(1);
     int retiredErrors = 0;
@@ -98,7 +104,9 @@ int main() {
       choc::ui::WebView retired(options);
       expect(retired.loadedOK(), "start a creation that outlives its WebView");
     }
+    expect(pendingCallbacks() == 1, "destruction does not forget an outstanding environment callback");
     (void)complete();
+    expect(pendingCallbacks() == 0, "late environment Invoke is consumed exactly once");
     expect(retiredErrors == 0, "ignore completion after the WebView is destroyed");
     setStage(3);
     {
@@ -131,7 +139,10 @@ int main() {
     int errors = 0;
     choc::ui::WebView::Options options;
     options.userDataFolder = userDataFolder;
-    options.webviewIsReady = [&](choc::ui::WebView &) { ++ready; };
+    options.webviewIsReady = [&](choc::ui::WebView &) {
+      expect(pendingCallbacks() == 1, "the controller remains counted throughout its ready callback");
+      ++ready;
+    };
     options.webviewInitialisationError = [&](const std::string &) { ++errors; };
     {
       choc::ui::WebView view(options);
@@ -140,6 +151,7 @@ int main() {
       expect(ready == 1 && errors == 0 && stats()->closeCalls == 0 && stats()->references == 2,
              "the live view owns an open controller");
     }
+    expect(pendingCallbacks() == 0, "Invoke completion and later handler release do not double-decrement");
     expectClosedOnce(1);
 
     // Destruction during environment creation has no controller to close. A
@@ -164,6 +176,38 @@ int main() {
            "late non-null controller completion is rejected and closed");
     expectClosedOnce(0);
     expect(ready == 1 && errors == 0, "retired callbacks never notify the destroyed owner");
+    expect(pendingCallbacks() == 0, "late Close path consumes its controller completion");
+
+    // The runtime may discard a completion without ever invoking it. Its COM
+    // reference still keeps the token outstanding until the handler is released.
+    for (bool controllerPending : {false, true}) {
+      setStage(5);
+      {
+        choc::ui::WebView retired(options);
+        if (controllerPending) expect(complete() == S_OK, "queue the controller completion");
+        expect(pendingCallbacks() == 1, "one completion is pending before retirement");
+      }
+      expect(pendingCallbacks() == 1, "retirement cannot cancel the runtime's reference");
+      releasePending();
+      expect(pendingCallbacks() == 0, "release without Invoke consumes the remaining completion");
+    }
+
+    for (bool invoke : {false, true}) {
+      setStage(5);
+      bool called = false;
+      {
+        choc::ui::WebView view(options);
+        expect(complete() == S_OK && completeController() == S_OK, "prepare script completion coverage");
+        expect(view.evaluateJavascript("true", [&](const auto &, const auto &) {
+          expect(pendingCallbacks() == 1, "ExecuteScript is counted throughout its completion body");
+          called = true;
+        }), "queue an ExecuteScript completion");
+      }
+      expect(pendingCallbacks() == 1, "a script completion may outlive the view");
+      if (invoke) expect(completeScript() == S_OK, "deliver the late script completion");
+      else releasePending();
+      expect(called == invoke && pendingCallbacks() == 0, "script Invoke or release decrements exactly once");
+    }
 
     // Simulate asynchronous delivery through the actual owner-STA message pump.
     // Keep the fixture DLL and callback state alive through this drain.
@@ -185,16 +229,24 @@ int main() {
       DestroyWindow(window);
       UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
     });
-    expect(PostMessageW(window, WM_APP + 1, 0, reinterpret_cast<LPARAM>(&queued)) != FALSE,
-           "queue completion after the view has been destroyed");
     std::chrono::steady_clock::time_point now{};
     effetune::vst::testing::WebViewExitWaitHooks hooks;
     hooks.now = [&] { return now; };
     hooks.pause = [&] { now += std::chrono::milliseconds(100); };
+    bool posted = false;
+    hooks.pump = [&] {
+      if (!posted && now >= std::chrono::steady_clock::time_point{} + std::chrono::milliseconds(600)) {
+        expect(PostMessageW(window, WM_APP + 1, 0, reinterpret_cast<LPARAM>(&queued)) != FALSE,
+               "queue a delayed completion after the view has been destroyed");
+        posted = true;
+      }
+      effetune::vst::testing::pumpWebViewTestMessages();
+    };
     hooks.scan = [](const auto &) { return std::vector<DWORD>{}; }; // fixture has no browser
+    hooks.pendingCallbacks = pendingCallbacks;
     expect(effetune::vst::testing::waitForWebViewsExit({directory}, std::chrono::seconds(2), hooks) &&
                queued.delivered && queued.result == E_FAIL,
-           "drain dispatches the late callback while its DLL and owner state are still alive");
+           "the unified drain waits for the late callback even after 600ms without a browser process");
     expectClosedOnce(0);
 
     setStage(5);
@@ -210,7 +262,8 @@ int main() {
     }
     expect(unwound, "exercise exception-path destruction");
     expectClosedOnce(1);
-    std::cout << "WebView2 initialization, owner-STA Close-before-release, and late callbacks verified\n";
+    expect(pendingCallbacks() == 0, "no outstanding completion remains at fixture exit");
+    std::cout << "WebView2 initialization, completion accounting, owner-STA Close and late callbacks verified\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

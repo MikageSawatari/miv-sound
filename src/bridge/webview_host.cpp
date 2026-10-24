@@ -1778,6 +1778,12 @@ bool WebViewHost::evaluate(std::string script, EvaluationHandler handler) {
          state_->evaluate(std::move(script), std::move(handler));
 }
 
+#if defined(_WIN32)
+std::uint64_t pendingWebViewCallbacksForTesting() noexcept {
+  return choc::ui::mivSoundTestPendingWebViewCallbacks();
+}
+#endif
+
 WebViewStatus WebViewHost::status() const noexcept {
   return state_ != nullptr
              ? state_->status.load(std::memory_order_acquire)

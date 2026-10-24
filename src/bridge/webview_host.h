@@ -13,6 +13,11 @@ namespace effetune::vst {
 
 struct WebViewHostState;
 
+#if defined(_WIN32)
+// Read-only test observation; does not alter WebView lifetime or behaviour.
+[[nodiscard]] std::uint64_t pendingWebViewCallbacksForTesting() noexcept;
+#endif
+
 /// How long the asynchronous WebView2 construction is allowed to take before the
 /// editor gives up waiting silently and puts native diagnostics in front of the
 /// user. A cold WebView2 start on a slow disk is comfortably inside this.

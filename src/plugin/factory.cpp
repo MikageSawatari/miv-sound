@@ -1,12 +1,19 @@
 #include "plugin_ids.h"
 #include "plugin_processor.h"
 #include "version.h"
+#include "bridge/webview_host.h"
 
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "public.sdk/source/main/pluginfactory.h"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
+
+#if defined(_WIN32)
+extern "C" __declspec(dllexport) std::uint64_t mivSoundTestPendingWebViewCallbacks() noexcept {
+  return effetune::vst::pendingWebViewCallbacksForTesting();
+}
+#endif
 
 #if defined(EFFETUNE_AUTOMATION_HOST_GATE_FIXTURE)
 constexpr auto kPluginDisplayName = "mIV Sound Automation Host Gate";

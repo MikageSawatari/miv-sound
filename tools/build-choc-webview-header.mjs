@@ -20,6 +20,55 @@ function replaceOnce(before, after) {
   header = header.replace(before, after);
 }
 
+// One counter for all WebViews in this image, shared by every translation unit.
+// DLL hosts read their image's counter through the read-only plugin export.
+replaceOnce(`#endif // __webview2_h__
+
+namespace choc::ui
+{
+
+//==============================================================================
+struct WebView::Pimpl`, `#endif // __webview2_h__
+
+namespace choc::ui
+{
+
+inline std::atomic<uint64_t> mivSoundPendingWebViewCallbacks { 0 };
+
+inline uint64_t mivSoundTestPendingWebViewCallbacks() noexcept
+{
+    return mivSoundPendingWebViewCallbacks.load();
+}
+
+// A completion remains outstanding until Invoke RETURNS, or its handler dies.
+// Environment and controller share an EventHandler, so use separate tokens.
+struct MivSoundPendingWebViewCallback
+{
+    explicit MivSoundPendingWebViewCallback (bool active = true) { if (active) arm(); }
+    ~MivSoundPendingWebViewCallback() { finish(); }
+    void arm()
+    {
+        if (! pending.exchange (true)) ++mivSoundPendingWebViewCallbacks;
+    }
+    void finish()
+    {
+        if (pending.exchange (false)) --mivSoundPendingWebViewCallbacks;
+    }
+    struct Invocation
+    {
+        MivSoundPendingWebViewCallback& token;
+        ~Invocation() { token.finish(); }
+    };
+    std::atomic<bool> pending { false };
+};
+
+//==============================================================================
+struct WebView::Pimpl`);
+
+replaceOnce('        virtual ~EventHandler() {}', `        virtual ~EventHandler() {}
+        MivSoundPendingWebViewCallback environmentCompletion;
+        MivSoundPendingWebViewCallback controllerCompletion { false };`);
+
 replaceOnce('        std::function<void(choc::ui::WebView&)> webviewIsReady;',
   `        std::function<void(choc::ui::WebView&)> webviewIsReady;
 
@@ -85,6 +134,7 @@ replaceOnce(`        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Env
         }`,
   `        HRESULT STDMETHODCALLTYPE Invoke (HRESULT result, ICoreWebView2Environment* env) override
         {
+            const MivSoundPendingWebViewCallback::Invocation completion { environmentCompletion };
             if (deletionCheckerRef->deleted)
                 return E_FAIL;
 
@@ -100,6 +150,7 @@ replaceOnce(`        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Env
                 return E_FAIL;
             }
 
+            controllerCompletion.arm();
             result = env->CreateCoreWebView2Controller (ownerPimpl.hwnd, this);
             if (FAILED (result))
                 ownerPimpl.reportInitialisationError (result);
@@ -118,6 +169,7 @@ replaceOnce(`        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Con
                 return E_FAIL;`,
   `        HRESULT STDMETHODCALLTYPE Invoke (HRESULT result, ICoreWebView2Controller* controller) override
         {
+            const MivSoundPendingWebViewCallback::Invocation completion { controllerCompletion };
             if (deletionCheckerRef->deleted)
             {
                 // WebView2 completes on the creating STA. The owner no longer
@@ -141,6 +193,27 @@ replaceOnce(`        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Con
                 ownerPimpl.reportInitialisationError (FAILED (result) ? result : E_POINTER);
                 return E_FAIL;
             }`);
+
+replaceOnce('        virtual ~ExecuteScriptCompletedCallback() {}',
+  `        virtual ~ExecuteScriptCompletedCallback() {}
+        MivSoundPendingWebViewCallback scriptCompletion;`);
+replaceOnce(`        HRESULT STDMETHODCALLTYPE Invoke (HRESULT hr, LPCWSTR resultJSON) override
+        {`, `        HRESULT STDMETHODCALLTYPE Invoke (HRESULT hr, LPCWSTR resultJSON) override
+        {
+            const MivSoundPendingWebViewCallback::Invocation completion { scriptCompletion };`);
+
+// Validate the generated accounting contract as well as each source anchor.
+for (const [snippet, count] of [
+  ['inline std::atomic<uint64_t> mivSoundPendingWebViewCallbacks', 1],
+  ['const MivSoundPendingWebViewCallback::Invocation completion {', 3],
+  ['MivSoundPendingWebViewCallback environmentCompletion;', 1],
+  ['MivSoundPendingWebViewCallback controllerCompletion { false };', 1],
+  ['MivSoundPendingWebViewCallback scriptCompletion;', 1],
+  ['controllerCompletion.arm();', 1],
+]) {
+  if (header.split(snippet).length !== count + 1)
+    throw new Error(`Generated CHOC callback accounting contract failed: ${snippet}`);
+}
 
 // Quoted includes must still resolve against the original header's directory.
 header = header.replace(/^(\s*#include\s+")([^"]+)(")/gm,

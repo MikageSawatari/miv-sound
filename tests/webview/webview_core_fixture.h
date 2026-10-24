@@ -38,7 +38,13 @@ public:
   HRESULT STDMETHODCALLTYPE remove_ProcessFailed(EventRegistrationToken) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE AddScriptToExecuteOnDocumentCreated(LPCWSTR, void*) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE RemoveScriptToExecuteOnDocumentCreated(LPCWSTR) override { return E_NOTIMPL; }
-  HRESULT STDMETHODCALLTYPE ExecuteScript(LPCWSTR, void*) override { return E_NOTIMPL; }
+  ICoreWebView2ExecuteScriptCompletedHandler *pendingScript = nullptr;
+  HRESULT STDMETHODCALLTYPE ExecuteScript(LPCWSTR, void *handler) override {
+    if (pendingScript != nullptr) return E_UNEXPECTED;
+    pendingScript = static_cast<ICoreWebView2ExecuteScriptCompletedHandler *>(handler);
+    if (pendingScript != nullptr) pendingScript->AddRef();
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE CapturePreview(COREWEBVIEW2_CAPTURE_PREVIEW_IMAGE_FORMAT, void*, void*) override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE Reload() override { return E_NOTIMPL; }
   HRESULT STDMETHODCALLTYPE PostWebMessageAsJson(LPCWSTR) override { return E_NOTIMPL; }

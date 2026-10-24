@@ -130,6 +130,20 @@ extern "C" __declspec(dllexport) HRESULT CompleteController() {
   return result;
 }
 
+extern "C" __declspec(dllexport) HRESULT CompleteScript() {
+  auto *handler = std::exchange(coreView.pendingScript, nullptr);
+  if (handler == nullptr) return E_UNEXPECTED;
+  const auto result = handler->Invoke(S_OK, L"true");
+  handler->Release();
+  return result;
+}
+
+extern "C" __declspec(dllexport) void ReleasePendingCallbacks() {
+  if (auto *handler = std::exchange(pending, nullptr)) handler->Release();
+  if (auto *handler = std::exchange(pendingController, nullptr)) handler->Release();
+  if (auto *handler = std::exchange(coreView.pendingScript, nullptr)) handler->Release();
+}
+
 STDAPI CreateCoreWebView2EnvironmentWithOptions(
     PCWSTR, PCWSTR userDataFolder, void *,
     ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler *handler) {

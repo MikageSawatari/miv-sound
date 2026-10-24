@@ -20,9 +20,32 @@
 #include <utility>
 #include <vector>
 
+namespace effetune::vst {
+std::uint64_t pendingWebViewCallbacksForTesting() noexcept;
+}
+
 namespace effetune::vst::testing {
 
 inline std::atomic_bool webViewTestWorkerFailed{false};
+using PendingWebViewCallbacks = std::function<std::uint64_t()>;
+// Set before the body starts any owner threads. EXE code stays loaded to exit.
+inline std::uint64_t (*localWebViewCallbackCounter)() = nullptr;
+inline std::uint64_t localPendingWebViewCallbacks() {
+  return localWebViewCallbackCounter != nullptr ? localWebViewCallbackCounter() : 0;
+}
+
+// Keep the DLL loaded while calling this reader. Include local callbacks too,
+// since C++ inline atomics are shared across TUs but not across Windows DLLs.
+inline PendingWebViewCallbacks moduleWebViewCallbackCounter(HMODULE module) {
+  return [module] {
+    if (module == nullptr) return localPendingWebViewCallbacks();
+    const auto reader = reinterpret_cast<std::uint64_t (*)()>(
+        GetProcAddress(module, "mivSoundTestPendingWebViewCallbacks"));
+    if (reader == nullptr)
+      throw std::runtime_error("Required mivSoundTestPendingWebViewCallbacks export is missing");
+    return reader() + localPendingWebViewCallbacks();
+  };
+}
 
 inline void pumpWebViewTestMessages() {
   MSG message{};
@@ -53,12 +76,12 @@ public:
       webViewTestWorkerFailed.store(true);
     }
   }) {}
-  ~TestThread() { releaseBeforeJoin(); }
+  ~TestThread() { stopAndJoinPumping(); }
   TestThread(TestThread &&other) noexcept
       : beforeJoin_(std::exchange(other.beforeJoin_, {})), thread_(std::move(other.thread_)) {}
   TestThread &operator=(TestThread &&other) noexcept {
     if (this != &other) {
-      releaseBeforeJoin();
+      stopAndJoinPumping();
       thread_ = std::move(other.thread_);
       beforeJoin_ = std::exchange(other.beforeJoin_, {});
     }
@@ -67,6 +90,7 @@ public:
   void join() { releaseBeforeJoin(); thread_.join(); }
   void joinPumping() {
     releaseBeforeJoin();
+    if (!thread_.joinable()) return;
     while (WaitForSingleObject(thread_.native_handle(), 0) == WAIT_TIMEOUT) {
       pumpWebViewTestMessages();
       std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -74,6 +98,10 @@ public:
     thread_.join();
   }
 private:
+  void stopAndJoinPumping() noexcept {
+    thread_.request_stop();
+    joinPumping();
+  }
   void releaseBeforeJoin() noexcept {
     if (!beforeJoin_) return;
     try { std::exchange(beforeJoin_, {})(); }
@@ -252,6 +280,7 @@ inline std::vector<DWORD> profileProcesses(const std::filesystem::path &profile)
 
 struct WebViewExitWaitHooks {
   std::function<std::vector<DWORD>(const std::filesystem::path &)> scan = profileProcesses;
+  PendingWebViewCallbacks pendingCallbacks = localPendingWebViewCallbacks;
   std::function<std::chrono::steady_clock::time_point()> now = std::chrono::steady_clock::now;
   std::function<void()> pump = pumpWebViewTestMessages;
   std::function<void()> pause = [] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); };
@@ -265,29 +294,38 @@ inline bool waitForWebViewsExit(const std::vector<std::filesystem::path> &direct
                                WebViewExitWaitHooks hooks = {}) {
   struct Profile {
     std::filesystem::path path;
-    std::chrono::steady_clock::time_point quietSince;
     std::string lastError;
   };
   const auto start = hooks.now();
   std::vector<Profile> profiles;
   for (const auto &directory : directories)
-    profiles.push_back({directory / "webview" / "EBWebView", start, {}});
+    profiles.push_back({directory / "webview" / "EBWebView", {}});
   bool passed = true;
   bool deadlineReported = false;
+  std::string callbackError;
+  const auto callbacksFinished = [&] {
+    try { return hooks.pendingCallbacks() == 0; }
+    catch (const std::exception &error) {
+      passed = false;
+      if (callbackError != error.what()) {
+        std::cerr << error.what() << "; test FAILED, continuing to wait for callbacks\n";
+        callbackError = error.what();
+      }
+      return false;
+    }
+  };
   for (;;) {
     hooks.pump();
-    bool allExited = true;
+    // A callback delivered DURING a process scan may start a browser after a
+    // folder was scanned. Require zero on BOTH sides; never use a quiet delay.
+    bool allExited = callbacksFinished();
     for (auto &profile : profiles) {
       try {
         const auto remaining = hooks.scan(profile.path);
-        const auto now = hooks.now();
-        if (!remaining.empty()) profile.quietSince = now;
-        if (!remaining.empty() || now - profile.quietSince < std::chrono::milliseconds(500))
-          allExited = false;
+        if (!remaining.empty()) allExited = false;
       } catch (const std::exception &error) {
         passed = false;
         allExited = false;
-        profile.quietSince = hooks.now();
         if (profile.lastError != error.what()) {
           std::wcerr << L"WebView2 exit query failed for " << profile.path.wstring() << L"; ";
           std::cerr << error.what() << "; test FAILED, continuing to wait\n";
@@ -295,15 +333,17 @@ inline bool waitForWebViewsExit(const std::vector<std::filesystem::path> &direct
         }
       }
     }
-    if (allExited) {
-      for (const auto &profile : profiles)
-        std::wcout << L"WebView2 exit verified: " << profile.path.wstring() << L'\n';
-      return passed;
-    }
+    allExited = callbacksFinished() && allExited;
     if (!deadlineReported && hooks.now() - start >= timeout) {
       passed = false;
       deadlineReported = true;
       std::cerr << "WebView2 exit deadline exceeded; test FAILED, continuing to wait for all profiles\n";
+    }
+    if (allExited) {
+      std::cout << "WebView2 callbacks verified: 0\n";
+      for (const auto &profile : profiles)
+        std::wcout << L"WebView2 exit verified: " << profile.path.wstring() << L'\n';
+      return passed;
     }
     hooks.pause();
   }
@@ -312,9 +352,11 @@ inline bool waitForWebViewsExit(const std::vector<std::filesystem::path> &direct
 inline bool waitForWebViewExit(const std::filesystem::path &directory,
                               std::chrono::milliseconds timeout = std::chrono::seconds(120),
                               std::function<std::vector<DWORD>(const std::filesystem::path &)> scan =
-                                  profileProcesses) {
+                                  profileProcesses,
+                              PendingWebViewCallbacks pending = {}) {
   WebViewExitWaitHooks hooks;
   hooks.scan = std::move(scan);
+  if (pending) hooks.pendingCallbacks = std::move(pending);
   return waitForWebViewsExit({directory}, timeout, std::move(hooks));
 }
 
@@ -328,8 +370,11 @@ inline void rememberWebViewTestDirectory(const std::filesystem::path &directory)
 }
 
 // Use before ExitDll/FreeLibrary and before CoUninitialize on an owner STA.
-inline void drainTrackedWebViews() {
-  if (!waitForWebViewsExit(webViewTestDirectories)) webViewCleanupFailed = true;
+inline void drainTrackedWebViews(PendingWebViewCallbacks pending = {}) {
+  WebViewExitWaitHooks hooks;
+  if (pending) hooks.pendingCallbacks = std::move(pending);
+  if (!waitForWebViewsExit(webViewTestDirectories, std::chrono::seconds(120), std::move(hooks)))
+    webViewCleanupFailed = true;
 }
 
 inline void checkWebViewTestDeadline() {
@@ -344,8 +389,10 @@ auto webViewTestDeadlineAfter(std::chrono::duration<Rep, Period> duration) {
 }
 
 template <class Body>
-int runWebViewTest(Body &&body, std::chrono::seconds budget = std::chrono::seconds(120)) {
+int runWebViewTest(Body &&body, std::chrono::seconds budget = std::chrono::seconds(120),
+                   std::uint64_t (*localCounter)() = nullptr) {
   suppressCrtModalDialogs();
+  localWebViewCallbackCounter = localCounter;
   std::wstring directory(32768, L'\0');
   const auto length = GetEnvironmentVariableW(L"MIV_SOUND_DATA_DIR", directory.data(),
                                              static_cast<DWORD>(directory.size()));

@@ -14,6 +14,6 @@ function replaceOnce(before, after) {
 replaceOnce('#include "module.h"',
   `#include "${path.resolve(values.support).replaceAll('\\', '/')}"\n#include "module.h"`);
 replaceOnce('\t~Win32Module () override\n\t{\n\t\tfactory = PluginFactory (nullptr);',
-  '\t~Win32Module () override\n\t{\n\t\teffetune::vst::testing::drainTrackedWebViews();\n\t\tfactory = PluginFactory (nullptr);');
+  '\t~Win32Module () override\n\t{\n\t\teffetune::vst::testing::drainTrackedWebViews(\n\t\t    effetune::vst::testing::moduleWebViewCallbackCounter((HMODULE)mModule));\n\t\tfactory = PluginFactory (nullptr);');
 await mkdir(path.dirname(values.out), { recursive: true });
 await writeFile(values.out, '// Generated test-only SDK adapter.\n' + source);

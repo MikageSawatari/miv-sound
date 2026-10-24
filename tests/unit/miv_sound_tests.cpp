@@ -47,7 +47,7 @@ public:
     expect(factory != nullptr, "load factory");
   }
   ~Plugin() {
-    testing::drainTrackedWebViews();
+    testing::drainTrackedWebViews(testing::moduleWebViewCallbackCounter(module_));
     factory->release();
     (void)reinterpret_cast<bool (PLUGIN_API *)()>(GetProcAddress(module_, "ExitDll"))();
     FreeLibrary(module_);

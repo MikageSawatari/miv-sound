@@ -144,7 +144,8 @@ public:
   }
 
   ~LoadedPlugin() {
-    effetune::vst::testing::drainTrackedWebViews();
+    effetune::vst::testing::drainTrackedWebViews(
+        effetune::vst::testing::moduleWebViewCallbackCounter(module_));
     if (factory_ != nullptr) {
       factory_->release();
     }

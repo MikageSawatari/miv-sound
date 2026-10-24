@@ -2878,5 +2878,6 @@ int runTestBody(const int argc, char **argv) {
 
 int main(const int argc, char **argv) {
   return effetune::vst::testing::runWebViewTest(
-      [&] { return runTestBody(argc, argv); }, std::chrono::seconds(1800));
+      [&] { return runTestBody(argc, argv); }, std::chrono::seconds(1800),
+      effetune::vst::pendingWebViewCallbacksForTesting);
 }
