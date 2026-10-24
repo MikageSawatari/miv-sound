@@ -8,7 +8,7 @@
 #include <stdexcept>
 #include <string>
 
-#include "../support/crt_dialog_suppression.h"
+#include "../support/webview_test_lifetime.h"
 
 namespace {
 
@@ -24,6 +24,22 @@ public:
   }
   ~ScopedSTA() { CoUninitialize(); }
 };
+
+struct QueuedControllerCompletion {
+  HRESULT (*complete)() = nullptr;
+  bool delivered = false;
+  HRESULT result = S_OK;
+};
+
+LRESULT CALLBACK completionWindowProc(HWND window, UINT message, WPARAM wParam, LPARAM lParam) {
+  if (message == WM_APP + 1) {
+    auto &completion = *reinterpret_cast<QueuedControllerCompletion *>(lParam);
+    completion.result = completion.complete();
+    completion.delivered = true;
+    return 0;
+  }
+  return DefWindowProcW(window, message, wParam, lParam);
+}
 
 } // namespace
 
@@ -148,6 +164,38 @@ int main() {
            "late non-null controller completion is rejected and closed");
     expectClosedOnce(0);
     expect(ready == 1 && errors == 0, "retired callbacks never notify the destroyed owner");
+
+    // Simulate asynchronous delivery through the actual owner-STA message pump.
+    // Keep the fixture DLL and callback state alive through this drain.
+    setStage(5);
+    {
+      choc::ui::WebView retired(options);
+      expect(complete() == S_OK, "start a controller whose completion will be queued");
+    }
+    QueuedControllerCompletion queued{completeController};
+    WNDCLASSW windowClass{};
+    windowClass.hInstance = GetModuleHandleW(nullptr);
+    windowClass.lpfnWndProc = completionWindowProc;
+    windowClass.lpszClassName = L"MivSoundQueuedControllerCompletion";
+    expect(RegisterClassW(&windowClass) != 0, "register the queued completion test window");
+    const auto window = CreateWindowExW(0, windowClass.lpszClassName, L"", 0, 0, 0, 0, 0,
+                                        HWND_MESSAGE, nullptr, windowClass.hInstance, nullptr);
+    expect(window != nullptr, "create an owner-STA completion queue");
+    const effetune::vst::testing::TestCleanup destroyWindow([&] {
+      DestroyWindow(window);
+      UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance);
+    });
+    expect(PostMessageW(window, WM_APP + 1, 0, reinterpret_cast<LPARAM>(&queued)) != FALSE,
+           "queue completion after the view has been destroyed");
+    std::chrono::steady_clock::time_point now{};
+    effetune::vst::testing::WebViewExitWaitHooks hooks;
+    hooks.now = [&] { return now; };
+    hooks.pause = [&] { now += std::chrono::milliseconds(100); };
+    hooks.scan = [](const auto &) { return std::vector<DWORD>{}; }; // fixture has no browser
+    expect(effetune::vst::testing::waitForWebViewsExit({directory}, std::chrono::seconds(2), hooks) &&
+               queued.delivered && queued.result == E_FAIL,
+           "drain dispatches the late callback while its DLL and owner state are still alive");
+    expectClosedOnce(0);
 
     setStage(5);
     bool unwound = false;

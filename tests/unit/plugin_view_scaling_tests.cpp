@@ -144,6 +144,7 @@ public:
   }
 
   ~LoadedPlugin() {
+    effetune::vst::testing::drainTrackedWebViews();
     if (factory_ != nullptr) {
       factory_->release();
     }

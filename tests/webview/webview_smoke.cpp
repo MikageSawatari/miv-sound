@@ -165,6 +165,14 @@ LRESULT CALLBACK parentWindowProcedure(HWND window, const UINT message,
   return windows;
 }
 
+// Keep every creating STA alive and pumping until late creation callbacks and
+// profile processes finish. Main-thread joins pump too, since other generations
+// in the same profile can still have callbacks queued on that STA.
+void finishWebViewOwnerSTA() {
+  if (!effetune::vst::testing::waitForWebViewExit(effetune::vst::soundDataDirectory()))
+    effetune::vst::testing::webViewTestWorkerFailed.store(true);
+}
+
 [[nodiscard]] int runNonPumpingOwnerChild() {
   constexpr wchar_t browserFolderVariable[] =
       L"WEBVIEW2_BROWSER_EXECUTABLE_FOLDER";
@@ -185,6 +193,10 @@ LRESULT CALLBACK parentWindowProcedure(HWND window, const UINT message,
       SetEvent(published);
       return;
     }
+    const effetune::vst::testing::TestCleanup finishSTA([] {
+      finishWebViewOwnerSTA();
+      CoUninitialize();
+    });
     auto local = std::make_shared<effetune::vst::WebViewHost>(
         [](const std::string_view) { return R"({"ok":true})"; },
         std::filesystem::path(EFFETUNE_WEBVIEW_ASSET_DIR), true);
@@ -210,11 +222,10 @@ LRESULT CALLBACK parentWindowProcedure(HWND window, const UINT message,
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
       }
     }
-    CoUninitialize();
-  });
+  }, [&] { SetEvent(resumeOwner); });
   if (WaitForSingleObject(published, kCompletionTimeoutMs) != WAIT_OBJECT_0) {
     SetEvent(resumeOwner);
-    owner.join();
+    owner.joinPumping();
     CloseHandle(resumeOwner);
     CloseHandle(published);
     return 1;
@@ -228,7 +239,7 @@ LRESULT CALLBACK parentWindowProcedure(HWND window, const UINT message,
   retired.reset();
   const auto elapsed = std::chrono::steady_clock::now() - started;
   SetEvent(resumeOwner);
-  owner.join();
+  owner.joinPumping();
   CloseHandle(resumeOwner);
   CloseHandle(published);
   (void)SetEnvironmentVariableW(browserFolderVariable, nullptr);
@@ -707,6 +718,10 @@ int runTestBody(const int argc, char **argv) {
         SetEvent(leasePublished);
         return;
       }
+      const effetune::vst::testing::TestCleanup finishSTA([] {
+        finishWebViewOwnerSTA();
+        CoUninitialize();
+      });
       auto lease = std::make_shared<effetune::vst::WebViewHost>(
           [&bridgeCalls](const std::string_view) {
             bridgeCalls.fetch_add(1, std::memory_order_relaxed);
@@ -739,8 +754,11 @@ int runTestBody(const int argc, char **argv) {
       if (leaseParent != nullptr) {
         DestroyWindow(leaseParent);
       }
-      CoUninitialize();
-    });
+    }, [&] { std::shared_ptr<effetune::vst::WebViewHost> retired;
+      { const std::scoped_lock lock(leaseMutex); retired = std::move(processorWebView); }
+      if (retired) retired->shutdown();
+      retired.reset();
+      SetEvent(resumeLease); });
     const auto publishedWait = WaitForSingleObject(leasePublished, kCompletionTimeoutMs);
     std::shared_ptr<effetune::vst::WebViewHost> retiredWebView;
     {
@@ -755,7 +773,7 @@ int runTestBody(const int argc, char **argv) {
     const auto shutdownElapsed =
         std::chrono::steady_clock::now() - shutdownStarted;
     SetEvent(resumeLease);
-    editorLease.join();
+    editorLease.joinPumping();
     stoppedLeaseRejectedAttach =
         publishedWait == WAIT_OBJECT_0 &&
         shutdownElapsed < std::chrono::seconds(3) &&
@@ -788,6 +806,10 @@ int runTestBody(const int argc, char **argv) {
         SetEvent(created);
         return;
       }
+      const effetune::vst::testing::TestCleanup finishSTA([] {
+        finishWebViewOwnerSTA();
+        CoUninitialize();
+      });
       auto local = std::make_shared<effetune::vst::WebViewHost>(
           [](const std::string_view) { return R"({"ok":true})"; },
           std::filesystem::path(EFFETUNE_WEBVIEW_ASSET_DIR), true);
@@ -803,8 +825,7 @@ int runTestBody(const int argc, char **argv) {
         TranslateMessage(&message);
         DispatchMessageW(&message);
       }
-      CoUninitialize();
-    });
+    }, [&] { SetEvent(releaseCreator); });
     (void)WaitForSingleObject(created, kCompletionTimeoutMs);
     std::shared_ptr<effetune::vst::WebViewHost> mainSplitHost;
     {
@@ -817,6 +838,10 @@ int runTestBody(const int argc, char **argv) {
         SetEvent(attached);
         return;
       }
+      const effetune::vst::testing::TestCleanup finishSTA([] {
+        finishWebViewOwnerSTA();
+        CoUninitialize();
+      });
       const auto splitParent = createParent();
       std::shared_ptr<effetune::vst::WebViewHost> local;
       {
@@ -852,8 +877,9 @@ int runTestBody(const int argc, char **argv) {
       if (splitParent != nullptr) {
         DestroyWindow(splitParent);
       }
-      CoUninitialize();
-    });
+    }, [&] { SetEvent(releaseCreator);
+      { const std::scoped_lock lock(splitMutex); mainSplitHost.reset(); }
+      SetEvent(stopEditor); });
     const auto attachedWait = WaitForSingleObject(attached, kCompletionTimeoutMs);
     bool evaluateReturnedBoundedly = false;
     if (attachedWait == WAIT_OBJECT_0 && mainSplitHost != nullptr &&
@@ -867,10 +893,10 @@ int runTestBody(const int argc, char **argv) {
     }
     const auto resizeWait = WaitForSingleObject(resized, kCompletionTimeoutMs);
     SetEvent(releaseCreator);
-    creator.join();
     mainSplitHost.reset();
     SetEvent(stopEditor);
-    editor.join();
+    creator.joinPumping();
+    editor.joinPumping();
     splitStaOperationsMarshalled =
         attachedWait == WAIT_OBJECT_0 &&
         splitAttached.load(std::memory_order_acquire) &&
@@ -2488,6 +2514,10 @@ int runTestBody(const int argc, char **argv) {
       offThreadHostPublished.store(true, std::memory_order_release);
       return;
     }
+    const effetune::vst::testing::TestCleanup finishSTA([] {
+      finishWebViewOwnerSTA();
+      CoUninitialize();
+    });
     const auto teardownParent = createParent();
     int teardownOwner = 0;
     if (teardownParent != nullptr) {
@@ -2533,9 +2563,16 @@ int runTestBody(const int argc, char **argv) {
       SetWindowLongPtrW(teardownParent, GWLP_USERDATA, 0);
       DestroyWindow(teardownParent);
     }
-    CoUninitialize();
-  });
+  }, [&] { std::shared_ptr<effetune::vst::WebViewHost> retired;
+    { const std::scoped_lock lock(processorLikeEditorMutex); retired = std::move(offThreadHost); }
+    if (retired) retired->shutdown();
+    retired.reset();
+    offThreadHostDestroyed.store(true, std::memory_order_release); });
+  const auto publishDeadline = effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
   while (!offThreadHostPublished.load(std::memory_order_acquire)) {
+    effetune::vst::testing::pumpWebViewTestMessages();
+    if (std::chrono::steady_clock::now() >= publishDeadline)
+      throw std::runtime_error("Off-thread owner failed to publish its WebView");
     std::this_thread::yield();
   }
   // A recycled HWND can point at a different dispatcher. Its identity must be
@@ -2556,7 +2593,7 @@ int runTestBody(const int argc, char **argv) {
   }
   retiredWebView.reset();
   offThreadHostDestroyed.store(true, std::memory_order_release);
-  offThreadUiOwner.join();
+  offThreadUiOwner.joinPumping();
 
   if (parent != nullptr) {
     DestroyWindow(parent);

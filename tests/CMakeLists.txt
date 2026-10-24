@@ -113,6 +113,7 @@ if(WIN32 AND TARGET effetune_plugin)
   target_compile_options(effetune_webview_test_lifetime_tests PRIVATE /W4 /WX /utf-8)
   target_link_libraries(effetune_webview_test_lifetime_tests PRIVATE shell32 user32)
   add_test(NAME effetune_webview_test_lifetime_tests COMMAND effetune_webview_test_lifetime_tests)
+  set_tests_properties(effetune_webview_test_lifetime_tests PROPERTIES TIMEOUT 120)
   add_executable(miv_sound_tests unit/miv_sound_tests.cpp)
   target_link_libraries(miv_sound_tests PRIVATE sdk effetune_engine version)
   target_compile_features(miv_sound_tests PRIVATE cxx_std_20)
@@ -247,8 +248,8 @@ if(APPLE AND TARGET effetune_plugin)
 endif()
 
 if(WIN32 AND TARGET validator AND TARGET effetune_plugin)
-  # Give the unmodified SDK validator the same RAII/browser-exit boundary as
-  # our own hosts. Only its entry point is renamed, in the build tree.
+  # Give the SDK validator our test boundary. Rename its entry point and adapt
+  # its module destructor below, keeping the SDK checkout unchanged.
   set_property(SOURCE
     "${vst3sdk_SOURCE_DIR}/public.sdk/samples/vst-hosting/validator/source/main.cpp"
     TARGET_DIRECTORY validator APPEND PROPERTY COMPILE_DEFINITIONS
@@ -256,6 +257,40 @@ if(WIN32 AND TARGET validator AND TARGET effetune_plugin)
   target_sources(validator PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support/validator_main.cpp")
   target_compile_features(validator PRIVATE cxx_std_20)
   target_link_libraries(validator PRIVATE shell32)
+  # Drain on the module-owning STA BEFORE the SDK calls ExitDll/FreeLibrary.
+  # Adapt a build-tree copy; keep the pinned SDK checkout untouched.
+  set(effetune_validator_module "${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting/module_win32.cpp")
+  set(effetune_validator_module_generator "${PROJECT_SOURCE_DIR}/tools/build-validator-module.mjs")
+  set(effetune_validator_module_copy "${CMAKE_CURRENT_BINARY_DIR}/validator-module/module_win32.cpp")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${effetune_validator_module}" "${effetune_validator_module_generator}")
+  execute_process(COMMAND "${EFFETUNE_NODE_EXECUTABLE}" "${effetune_validator_module_generator}"
+    --source "${effetune_validator_module}" --out "${effetune_validator_module_copy}"
+    --support "${CMAKE_CURRENT_SOURCE_DIR}/support/webview_test_lifetime.h"
+    RESULT_VARIABLE effetune_validator_module_result)
+  if(NOT effetune_validator_module_result EQUAL 0)
+    message(FATAL_ERROR "Preparing the validator module lifetime adapter failed")
+  endif()
+  get_target_property(effetune_validator_sources validator SOURCES)
+  get_target_property(effetune_validator_source_dir validator SOURCE_DIR)
+  set(effetune_validator_adapted_sources)
+  set(effetune_validator_module_matches 0)
+  foreach(effetune_validator_source IN LISTS effetune_validator_sources)
+    if(NOT IS_ABSOLUTE "${effetune_validator_source}")
+      set(effetune_validator_source "${effetune_validator_source_dir}/${effetune_validator_source}")
+    endif()
+    if(effetune_validator_source STREQUAL effetune_validator_module)
+      math(EXPR effetune_validator_module_matches "${effetune_validator_module_matches} + 1")
+      list(APPEND effetune_validator_adapted_sources "${effetune_validator_module_copy}")
+    else()
+      list(APPEND effetune_validator_adapted_sources "${effetune_validator_source}")
+    endif()
+  endforeach()
+  if(NOT effetune_validator_module_matches EQUAL 1)
+    message(FATAL_ERROR "Expected exactly one SDK validator Windows module source")
+  endif()
+  set_property(TARGET validator PROPERTY SOURCES "${effetune_validator_adapted_sources}")
+  target_include_directories(validator PRIVATE "${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/hosting")
   add_test(NAME effetune_vst3_validator
     COMMAND $<TARGET_FILE:validator>
             "${CMAKE_BINARY_DIR}/VST3/$<CONFIG>/${EFFETUNE_PLUGIN_PACKAGE_NAME}.vst3")
@@ -286,10 +321,11 @@ foreach(effetune_test IN LISTS effetune_registered_tests)
 endforeach()
 
 if(WIN32 AND TARGET effetune_plugin)
-  # CTest's hard process timeout skips COM/controller destruction. Deadlines are
-  # checked by the common test host at safe unwind boundaries instead. Never
-  # terminate an owner STA while its WebView2 processes are still alive.
-  set_tests_properties(effetune_webview_smoke effetune_now_playing_metadata_tests
+  # Last resort for a broken run whose callbacks/processes never finish.
+  # Normal teardown keeps pumping after a failure until the browsers exit.
+  set_tests_properties(effetune_webview_smoke PROPERTIES TIMEOUT 2400)
+  set_tests_properties(effetune_now_playing_metadata_tests effetune_vst3_validator PROPERTIES TIMEOUT 120)
+  set_tests_properties(
     effetune_plugin_processing_lifecycle_tests effetune_plugin_view_scaling_tests
-    effetune_vst3_validator miv_sound_tests PROPERTIES TIMEOUT 0)
+    miv_sound_tests PROPERTIES TIMEOUT 300)
 endif()

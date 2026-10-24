@@ -692,6 +692,10 @@ public:
   static void endSyntheticBlock(EffeTuneProcessor &processor) noexcept {
     processor.processBlockEpoch_.fetch_add(1, std::memory_order_seq_cst);
   }
+
+  static void endSyntheticBlockIfActive(EffeTuneProcessor &processor) noexcept {
+    if ((blockEpoch(processor) & 1u) != 0) endSyntheticBlock(processor);
+  }
 };
 
 } // namespace effetune::vst::plugin
@@ -925,6 +929,9 @@ public:
       changed_.notify_one();
       std::unique_lock lock(mutex_);
       changed_.wait(lock, [this] { return released_; });
+    }, [this] {
+      { std::scoped_lock lock(mutex_); released_ = true; }
+      changed_.notify_one();
     });
     std::unique_lock lock(mutex_);
     changed_.wait(lock, [this] { return held_; });
@@ -1100,7 +1107,7 @@ void testAutomationCatalogProjectionIsOneControlTransaction() {
       } else {
         PluginProcessorTestAccess::synchronizeAutomationBindings(*processor);
       }
-    });
+    }, [&] { PluginProcessorTestAccess::pauseAutomationCatalogBeforeProjection(*processor, false); });
     const auto paused = pumpMainThreadUntil(
         [&] {
           return PluginProcessorTestAccess::automationCatalogPausedBeforeProjection(
@@ -1115,7 +1122,7 @@ void testAutomationCatalogProjectionIsOneControlTransaction() {
           R"({"type":"pipeline/rebuild","payload":{"pipeline":"A","plugins":[]}})"
       );
       removalComplete.store(true, std::memory_order_release);
-    });
+    }, [&] { PluginProcessorTestAccess::pauseAutomationCatalogBeforeProjection(*processor, false); });
     const auto probeDeadline =
         std::chrono::steady_clock::now() + std::chrono::milliseconds(40);
     while (!removalComplete.load(std::memory_order_acquire) &&
@@ -2510,7 +2517,7 @@ void testStateRestoreCancelsAnInFlightNodeEnableDescriptor() {
          "render the disabling automation block");
 
   effetune::vst::testing::TestThread drainer(
-      [&] { PluginProcessorTestAccess::drainAutomationValues(*processor); });
+      [&] { PluginProcessorTestAccess::drainAutomationValues(*processor); }, [&] { PluginProcessorTestAccess::pauseAutomationDrainBeforeDescriptor(*processor, false); });
   const auto paused = pumpMainThreadUntil(
       [&] {
         return PluginProcessorTestAccess::automationDrainPausedBeforeDescriptor(
@@ -4337,7 +4344,7 @@ void testTelemetryPollLeavesTheAudioGuardAlone() {
       response = processor->handleUiMessage(
           R"({"type":"telemetry/read","payload":{}})");
       completed.store(true, std::memory_order_release);
-    });
+    }, [&] { if (guard.owns_lock()) guard.unlock(); });
     const auto deadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(20);
     while (!completed.load(std::memory_order_acquire) &&
@@ -5250,7 +5257,7 @@ void testAssetStatePollLeavesTheDspRunning() {
       response = processor->handleUiMessage(
           R"({"type":"pipeline/assetState","payload":{"pluginId":91,"slot":0}})");
       completed.store(true, std::memory_order_release);
-    });
+    }, [&] { if (guard.owns_lock()) guard.unlock(); });
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
     while (!completed.load(std::memory_order_acquire) &&
            std::chrono::steady_clock::now() < deadline) {
@@ -5339,7 +5346,7 @@ void testNotReadyPluginUpdateWaitsForTheInFlightBlock() {
     accepted.store(response["ok"].getWithDefault<bool>(false),
                    std::memory_order_release);
     completed.store(true, std::memory_order_release);
-  });
+  }, [&] { PluginProcessorTestAccess::endSyntheticBlockIfActive(*processor); });
   const auto deadline =
       std::chrono::steady_clock::now() + std::chrono::milliseconds(200);
   while (!completed.load(std::memory_order_acquire) &&
@@ -5862,7 +5869,7 @@ void testFailedDescriptorBackoffClaimsNothing() {
   effetune::vst::testing::TestThread service([&] {
     PluginProcessorTestAccess::serviceLatencyUpdates(*processor);
     completed.store(true, std::memory_order_release);
-  });
+  }, [&] { PluginProcessorTestAccess::endSyntheticBlockIfActive(*processor); });
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(20);
   while (!completed.load(std::memory_order_acquire) &&
          std::chrono::steady_clock::now() < deadline) {
@@ -6404,7 +6411,7 @@ void testConcurrentHostContextChangeWinsPluginUpdateAdmission() {
         R"("wasmParamsHash":1719233191,"executionCapabilities":{)"
         R"("supportedChannelModes":["stereo-pair"]}}}})");
     updateCompleted.store(true, std::memory_order_release);
-  });
+  }, [&] { PluginProcessorTestAccess::pausePluginUpdateBeforeRuntimeTransaction(*processor, false); });
   const auto pauseDeadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (!PluginProcessorTestAccess::pluginUpdatePausedBeforeRuntimeTransaction(
@@ -6511,10 +6518,10 @@ void testGateClosesInsideTheControlLock() {
   expect(std::abs(rig.outputLeft[0] - 1.25f) < 1.0e-6f,
          "the warm-up block is wet at the installed offset");
 
-  effetune::vst::testing::TestThread host;
   std::atomic_bool started{false};
   std::atomic_bool completed{false};
   std::atomic_bool reconfigured{false};
+  effetune::vst::testing::TestThread host;
   auto rendered = true;
   auto waitedForTheLock = false;
   std::uint32_t wetBlocks = 0;
@@ -6621,7 +6628,7 @@ void testTopologyEditsDuringPlaybackRaiseNoDiagnostic() {
       routeAccepted.store(response["ok"].getWithDefault<bool>(false),
                           std::memory_order_release);
       completed.store(true, std::memory_order_release);
-    });
+    }, [&] { PluginProcessorTestAccess::endSyntheticBlockIfActive(*processor); });
     const auto gateDeadline =
         std::chrono::steady_clock::now() + std::chrono::seconds(20);
     while (PluginProcessorTestAccess::processingReady(*processor) &&
@@ -6812,7 +6819,7 @@ void testPendingWorkIsServicedWhenTheAudioCallbackQuiesces() {
     PluginProcessorTestAccess::serviceLatencyUpdates(*processor);
     PluginProcessorTestAccess::serviceLatencyUpdates(*processor);
     completed.store(true, std::memory_order_release);
-  });
+  }, [&] { PluginProcessorTestAccess::endSyntheticBlockIfActive(*processor); });
   const auto claimDeadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(20);
   while (!completed.load(std::memory_order_acquire) &&
@@ -7344,11 +7351,12 @@ void testSfzReplacementKeepsWetProcessing() {
       entered.store(true, std::memory_order_release);
       while (!release.load(std::memory_order_acquire)) std::this_thread::yield();
     });
-    effetune::vst::testing::TestThread control([&] { result = commit(revision); done.store(true, std::memory_order_release); });
-    struct ReleaseOnExit {
-      std::atomic_bool &flag;
-      ~ReleaseOnExit() { flag.store(true, std::memory_order_release); }
-    } releaseOnExit{release};
+    const effetune::vst::testing::TestCleanup clearHook([&] {
+      PluginProcessorTestAccess::setAssetPreparationHook(*processor, {});
+    });
+    effetune::vst::testing::TestThread control(
+        [&] { result = commit(revision); done.store(true, std::memory_order_release); },
+        [&] { release.store(true, std::memory_order_release); });
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(60);
     while (!entered.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
       render(); std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -10658,7 +10666,7 @@ void testStaleBulkRequestsCannotCrossStateReplacement() {
         R"({"id":802,"type":"DCOffsetPlugin","name":"Stale Rebuild",)"
         R"("enabled":true,"parameters":{"of":0.25},"wasmParams":[0.25],)"
         R"("wasmParamsHash":1104945464}]}})");
-  });
+  }, [&] { PluginProcessorTestAccess::releaseBulkRequestBeforeCommit(*processor); });
   const auto rebuildPaused = waitForBulkPause();
   restoreAndRebuild();
   const auto beforeStaleRebuild = captureReplacement();
@@ -10679,7 +10687,7 @@ void testStaleBulkRequestsCannotCrossStateReplacement() {
         R"("enabled":true,"parameters":{"of":0.75},"wasmParams":[0.75],)"
         R"("wasmParamsHash":1104945464}],"pipelineB":null,)"
         R"("pipelineBInitialized":false,"currentPipeline":"A"}})");
-  });
+  }, [&] { PluginProcessorTestAccess::releaseBulkRequestBeforeCommit(*processor); });
   const auto historyPaused = waitForBulkPause();
   restoreAndRebuild();
   const auto beforeStaleHistory = captureReplacement();
@@ -10708,7 +10716,7 @@ void testStaleBulkRequestsCannotCrossStateReplacement() {
         R"("enabled":true,"parameters":{"of":1.0},"wasmParams":[1.0],)"
         R"("wasmParamsHash":1104945464}],"pipelineB":null,)"
         R"("pipelineBInitialized":false,"currentPipeline":"A"}})");
-  });
+  }, [&] { PluginProcessorTestAccess::releaseBulkRequestBeforeCommit(*processor); });
   const auto pendingHistoryPaused = waitForBulkPause();
   installReplacementRuntime();
   const auto beforePendingHistory = captureReplacement();
@@ -10801,7 +10809,7 @@ void testStalePluginUpdateCannotOverwritePendingStateReplacement() {
         R"("elementIndex":0,"normalized":0.75,"beginGesture":true,)"
         R"("endGesture":false}]}})");
     staleUpdateCompleted.store(true, std::memory_order_release);
-  });
+  }, [&] { PluginProcessorTestAccess::pausePluginUpdateBeforeRuntimeTransaction(*processor, false); });
   const auto pauseDeadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (!PluginProcessorTestAccess::pluginUpdatePausedBeforeRuntimeTransaction(
@@ -10918,7 +10926,7 @@ void testStalePluginUpdateCannotOverwritePendingStateReplacement() {
         R"("normalized":0.875,"beginGesture":true,"endGesture":false,)"
         R"("bindIfUnbound":true}]}})");
     crossedEpochUpdateCompleted.store(true, std::memory_order_release);
-  });
+  }, [&] { PluginProcessorTestAccess::pausePluginUpdateBeforeAutomationEdits(*processor, false); });
   const auto automationPauseDeadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (!PluginProcessorTestAccess::pluginUpdatePausedBeforeAutomationEdits(
@@ -11188,7 +11196,7 @@ void testSetParamNormalizedAloneReachesTheSavedState() {
     PluginProcessorTestAccess::commitPendingControllerWritesIfAudioIdle(
         *processor);
     committerCompleted.store(true, std::memory_order_release);
-  });
+  }, [&] { if (heldResources.owns_lock()) heldResources.unlock(); PluginProcessorTestAccess::endSyntheticBlockIfActive(*processor); });
   while (!committerStarted.load(std::memory_order_acquire)) {
     std::this_thread::yield();
   }
@@ -11252,7 +11260,7 @@ void testSetParamNormalizedAloneReachesTheSavedState() {
     PluginProcessorTestAccess::commitPendingControllerWritesIfAudioIdle(
         *processor);
     handoffCommitterCompleted.store(true, std::memory_order_release);
-  });
+  }, [&] { PluginProcessorTestAccess::pauseControllerCommitBeforePublish(*processor, false); });
   const auto handoffDeadline =
       std::chrono::steady_clock::now() + std::chrono::seconds(10);
   while (!PluginProcessorTestAccess::controllerCommitPaused(*processor) &&

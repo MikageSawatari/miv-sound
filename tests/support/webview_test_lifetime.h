@@ -24,13 +24,23 @@ namespace effetune::vst::testing {
 
 inline std::atomic_bool webViewTestWorkerFailed{false};
 
+inline void pumpWebViewTestMessages() {
+  MSG message{};
+  while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+    TranslateMessage(&message);
+    DispatchMessageW(&message);
+  }
+}
+
 // Assertion failures in worker threads must not call std::terminate and skip
 // every WebView/COM destructor in the process. The host reports them as failure.
 class TestThread {
 public:
   TestThread() = default;
   template <class Body>
-  explicit TestThread(Body body) : thread_([body = std::move(body)](std::stop_token stop) mutable {
+  explicit TestThread(Body body, std::function<void()> beforeJoin = {})
+      : beforeJoin_(std::move(beforeJoin)),
+        thread_([body = std::move(body)](std::stop_token stop) mutable {
     (void)stop;
     try {
       if constexpr (std::is_invocable_v<Body, std::stop_token>) body(stop);
@@ -43,10 +53,36 @@ public:
       webViewTestWorkerFailed.store(true);
     }
   }) {}
-  TestThread(TestThread &&) = default;
-  TestThread &operator=(TestThread &&) = default;
-  void join() { thread_.join(); }
+  ~TestThread() { releaseBeforeJoin(); }
+  TestThread(TestThread &&other) noexcept
+      : beforeJoin_(std::exchange(other.beforeJoin_, {})), thread_(std::move(other.thread_)) {}
+  TestThread &operator=(TestThread &&other) noexcept {
+    if (this != &other) {
+      releaseBeforeJoin();
+      thread_ = std::move(other.thread_);
+      beforeJoin_ = std::exchange(other.beforeJoin_, {});
+    }
+    return *this;
+  }
+  void join() { releaseBeforeJoin(); thread_.join(); }
+  void joinPumping() {
+    releaseBeforeJoin();
+    while (WaitForSingleObject(thread_.native_handle(), 0) == WAIT_TIMEOUT) {
+      pumpWebViewTestMessages();
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    thread_.join();
+  }
 private:
+  void releaseBeforeJoin() noexcept {
+    if (!beforeJoin_) return;
+    try { std::exchange(beforeJoin_, {})(); }
+    catch (...) {
+      std::cerr << "Test worker pause/hook release failed\n";
+      webViewTestWorkerFailed.store(true);
+    }
+  }
+  std::function<void()> beforeJoin_;
   std::jthread thread_;
 };
 
@@ -106,11 +142,13 @@ private:
   HANDLE value_;
 };
 
-// A terminating process can lose its command line before its handle becomes
-// signalled. Recheck the SAME handle after a short bounded wait; neither an NT
-// failure nor a different process/user/session proves that this profile is idle.
+// A terminating process can lose its command line long before its handle becomes
+// signalled. Once termination is known, keep the SAME handle and pump the owner
+// STA until exit is confirmed. Other query failures retain bounded retries and
+// must not silently exclude a live process with unknown profile ownership.
 template <class Query, class Wait>
-std::wstring readProcessCommandLine(DWORD processId, Query query, Wait wait) {
+std::wstring readProcessCommandLine(DWORD processId, Query query, Wait wait,
+                                   std::function<DWORD()> exitCode = [] { return STILL_ACTIVE; }) {
   const auto exited = [&](DWORD timeout) {
     const auto state = wait(timeout);
     if (state == WAIT_OBJECT_0) return true;
@@ -128,7 +166,8 @@ std::wstring readProcessCommandLine(DWORD processId, Query query, Wait wait) {
     status = query(nullptr, 0, &size);
     // The sizing call normally returns STATUS_INFO_LENGTH_MISMATCH together
     // with the required size. Keep its status for diagnostics if no size exists.
-    if (size >= sizeof(UNICODE_STRING) && size <= 1024 * 1024) {
+    constexpr auto processIsTerminating = static_cast<NTSTATUS>(0xc000010aUL);
+    if (status != processIsTerminating && size >= sizeof(UNICODE_STRING) && size <= 1024 * 1024) {
       std::vector<unsigned char> buffer(size);
       stage = "read";
       status = query(buffer.data(), size, &size);
@@ -146,9 +185,16 @@ std::wstring readProcessCommandLine(DWORD processId, Query query, Wait wait) {
         stage = "empty or malformed result";
       }
     }
-    // Includes a process that starts terminating during either query, as well
-    // as a command line that grows between sizing and reading. Never infer exit
-    // from NTSTATUS alone: wait until the process handle confirms it.
+    // Neither a terminating NTSTATUS nor a non-STILL_ACTIVE exit code alone
+    // proves that all process cleanup is complete. Wait for the handle to signal,
+    // without converting slow termination into a sticky test failure. CTest's
+    // finite outer TIMEOUT remains the last resort for a stuck termination.
+    if (status == processIsTerminating || exitCode() != STILL_ACTIVE) {
+      while (!exited(50)) pumpWebViewTestMessages();
+      return {};
+    }
+    // Other query failures (including command-line size races) may recover, but
+    // a live unreadable process cannot be excluded on ownership assumptions.
     if (exited(50)) return {};
   }
   std::ostringstream error;
@@ -169,7 +215,13 @@ inline std::wstring processCommandLine(HANDLE process, DWORD processId) {
   return readProcessCommandLine(processId,
       [&](void *buffer, ULONG size, ULONG *required) {
         return query(process, static_cast<PROCESSINFOCLASS>(60), buffer, size, required);
-      }, [&](DWORD timeout) { return WaitForSingleObject(process, timeout); });
+      }, [&](DWORD timeout) { return WaitForSingleObject(process, timeout); }, [&] {
+        DWORD code = STILL_ACTIVE;
+        if (!GetExitCodeProcess(process, &code))
+          throw std::runtime_error("Cannot read msedgewebview2.exe PID " +
+                                   std::to_string(processId) + " exit code; profile ownership unknown");
+        return code;
+      });
 }
 
 inline std::vector<DWORD> profileProcesses(const std::filesystem::path &profile) {
@@ -198,36 +250,72 @@ inline std::vector<DWORD> profileProcesses(const std::filesystem::path &profile)
   return matches;
 }
 
-// Call only AFTER views, processors and WebViewHost instances have unwound.
-// Pump the owner STA while asynchronous controller/environment releases finish.
-// No process is killed, including on failure. Keep the profile for diagnostics.
-inline bool waitForWebViewExit(const std::filesystem::path &dataDirectory,
+struct WebViewExitWaitHooks {
+  std::function<std::vector<DWORD>(const std::filesystem::path &)> scan = profileProcesses;
+  std::function<std::chrono::steady_clock::time_point()> now = std::chrono::steady_clock::now;
+  std::function<void()> pump = pumpWebViewTestMessages;
+  std::function<void()> pause = [] { std::this_thread::sleep_for(std::chrono::milliseconds(50)); };
+};
+
+// Failure and permission to exit are separate. A failed query or deadline makes
+// the verdict sticky, but NEVER ends the owner STA or skips the other folders.
+// Only CTest's finite outer TIMEOUT may stop an irrecoverably broken run.
+inline bool waitForWebViewsExit(const std::vector<std::filesystem::path> &directories,
+                               std::chrono::milliseconds timeout = std::chrono::seconds(120),
+                               WebViewExitWaitHooks hooks = {}) {
+  struct Profile {
+    std::filesystem::path path;
+    std::chrono::steady_clock::time_point quietSince;
+    std::string lastError;
+  };
+  const auto start = hooks.now();
+  std::vector<Profile> profiles;
+  for (const auto &directory : directories)
+    profiles.push_back({directory / "webview" / "EBWebView", start, {}});
+  bool passed = true;
+  bool deadlineReported = false;
+  for (;;) {
+    hooks.pump();
+    bool allExited = true;
+    for (auto &profile : profiles) {
+      try {
+        const auto remaining = hooks.scan(profile.path);
+        const auto now = hooks.now();
+        if (!remaining.empty()) profile.quietSince = now;
+        if (!remaining.empty() || now - profile.quietSince < std::chrono::milliseconds(500))
+          allExited = false;
+      } catch (const std::exception &error) {
+        passed = false;
+        allExited = false;
+        profile.quietSince = hooks.now();
+        if (profile.lastError != error.what()) {
+          std::wcerr << L"WebView2 exit query failed for " << profile.path.wstring() << L"; ";
+          std::cerr << error.what() << "; test FAILED, continuing to wait\n";
+          profile.lastError = error.what();
+        }
+      }
+    }
+    if (allExited) {
+      for (const auto &profile : profiles)
+        std::wcout << L"WebView2 exit verified: " << profile.path.wstring() << L'\n';
+      return passed;
+    }
+    if (!deadlineReported && hooks.now() - start >= timeout) {
+      passed = false;
+      deadlineReported = true;
+      std::cerr << "WebView2 exit deadline exceeded; test FAILED, continuing to wait for all profiles\n";
+    }
+    hooks.pause();
+  }
+}
+
+inline bool waitForWebViewExit(const std::filesystem::path &directory,
                               std::chrono::milliseconds timeout = std::chrono::seconds(120),
-                              const std::function<std::vector<DWORD>(const std::filesystem::path &)> &scan =
+                              std::function<std::vector<DWORD>(const std::filesystem::path &)> scan =
                                   profileProcesses) {
-  const auto profile = dataDirectory / "webview" / "EBWebView";
-  const auto deadline = std::chrono::steady_clock::now() + timeout;
-  auto quietSince = std::chrono::steady_clock::now();
-  std::vector<DWORD> remaining;
-  do {
-    MSG message{};
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
-      TranslateMessage(&message);
-      DispatchMessageW(&message);
-    }
-    remaining = scan(profile);
-    const auto now = std::chrono::steady_clock::now();
-    if (!remaining.empty()) quietSince = now;
-    else if (now - quietSince >= std::chrono::milliseconds(500)) {
-      std::wcout << L"WebView2 exit verified: " << profile.wstring() << L'\n';
-      return true;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(50));
-  } while (std::chrono::steady_clock::now() < deadline);
-  std::wcerr << L"WebView2 exit timed out: " << profile.wstring() << L"; PIDs:";
-  for (const auto id : remaining) std::wcerr << L' ' << id;
-  std::wcerr << L" (left running; test FAILED)\n";
-  return false;
+  WebViewExitWaitHooks hooks;
+  hooks.scan = std::move(scan);
+  return waitForWebViewsExit({directory}, timeout, std::move(hooks));
 }
 
 inline thread_local std::chrono::steady_clock::time_point testDeadline =
@@ -237,6 +325,11 @@ inline thread_local bool webViewCleanupFailed = false;
 
 inline void rememberWebViewTestDirectory(const std::filesystem::path &directory) {
   webViewTestDirectories.push_back(directory);
+}
+
+// Use before ExitDll/FreeLibrary and before CoUninitialize on an owner STA.
+inline void drainTrackedWebViews() {
+  if (!waitForWebViewsExit(webViewTestDirectories)) webViewCleanupFailed = true;
 }
 
 inline void checkWebViewTestDeadline() {
@@ -269,7 +362,7 @@ int runWebViewTest(Body &&body, std::chrono::seconds budget = std::chrono::secon
   testDeadline = std::chrono::steady_clock::now() + budget;
   int result = 1;
   try {
-    result = body(); // ALL body locals are destroyed before the wait, even on return/throw.
+    result = body(); // DLL owners also drain before ExitDll/FreeLibrary during unwind.
     checkWebViewTestDeadline();
   } catch (const std::exception &error) {
     std::cerr << "Test failure: " << error.what() << '\n';
@@ -279,13 +372,7 @@ int runWebViewTest(Body &&body, std::chrono::seconds budget = std::chrono::secon
     result = 1;
   }
   testDeadline = (std::chrono::steady_clock::time_point::max)();
-  try {
-    for (const auto &testDirectory : webViewTestDirectories)
-      if (!waitForWebViewExit(testDirectory)) result = 1;
-  } catch (const std::exception &error) {
-    std::cerr << "WebView2 exit check failed: " << error.what() << '\n';
-    result = 1;
-  }
+  drainTrackedWebViews();
   return webViewCleanupFailed || webViewTestWorkerFailed.load() ? 1 : result;
 }
 

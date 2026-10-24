@@ -11,6 +11,98 @@ void expect(bool condition, const char *message) {
   if (!condition) throw std::runtime_error(message);
 }
 
+void testPauseReleaseBeforeJoin() {
+  std::atomic_bool paused{true}, entered{false}, finished{false};
+  int releases = 0;
+  bool injected = false;
+  try {
+    TestThread worker([&] {
+      entered.store(true);
+      while (paused.load()) std::this_thread::yield();
+      finished.store(true);
+    }, [&] { ++releases; paused.store(false); });
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (!entered.load() && std::chrono::steady_clock::now() < deadline) std::this_thread::yield();
+    expect(entered.load(), "reach the worker pause before injecting an assertion failure");
+    throw std::runtime_error("injected paused-worker assertion");
+  } catch (const std::runtime_error &error) {
+    expect(std::string(error.what()) == "injected paused-worker assertion", "only catch the injected assertion");
+    injected = true;
+  }
+  expect(injected && finished.load() && releases == 1,
+         "unwind releases the pause exactly once BEFORE jthread destruction joins");
+  paused.store(true);
+  finished.store(false);
+  {
+    TestThread first([&] { while (paused.load()) std::this_thread::yield(); finished.store(true); },
+                     [&] { ++releases; paused.store(false); });
+    TestThread moved(std::move(first));
+    moved.join();
+  }
+  expect(finished.load() && releases == 2, "moving and explicit join preserve one pause release");
+}
+
+void testFailedWaitStillDrainsEveryProfile() {
+  std::chrono::steady_clock::time_point now{};
+  const std::filesystem::path a = LR"(G:\profile-a)", b = LR"(G:\profile-b)";
+  unsigned callsA = 0, callsB = 0;
+  std::string order;
+  WebViewExitWaitHooks hooks;
+  hooks.now = [&] { return now; };
+  hooks.pause = [&] { now += std::chrono::milliseconds(100); };
+  hooks.pump = [] {};
+  hooks.scan = [&](const auto &path) -> std::vector<DWORD> {
+    if (path == a / "webview/EBWebView") {
+      order += 'A';
+      if (++callsA <= 2) throw std::runtime_error("injected unreadable process");
+      return callsA < 5 ? std::vector<DWORD>{123} : std::vector<DWORD>{};
+    }
+    expect(path == b / "webview/EBWebView", "scan only the registered profiles");
+    order += 'B';
+    return ++callsB < 3 ? std::vector<DWORD>{456} : std::vector<DWORD>{};
+  };
+  expect(!waitForWebViewsExit({a, b}, std::chrono::milliseconds(100), hooks),
+         "query error and elapsed deadline remain test failures after eventual clean exit");
+  expect(callsA == callsB && callsA >= 9 && now >= std::chrono::milliseconds(800) +
+             std::chrono::steady_clock::time_point{},
+         "wait continues beyond its deadline until BOTH profiles have exited and stayed quiet");
+  expect(order.find("AA") == std::string::npos && order.find("BB") == std::string::npos,
+         "a query exception never skips later folders in the round");
+}
+
+void testDrainKeepsModuleAndOwnerStateAlive() {
+  std::chrono::steady_clock::time_point now{};
+  bool moduleLoaded = true, viewAlive = true, callbackPending = false, callbackDelivered = false;
+  bool ordered = true, drained = false;
+  std::vector<std::string> events;
+  WebViewExitWaitHooks hooks;
+  hooks.now = [&] { return now; };
+  hooks.pause = [&] { now += std::chrono::milliseconds(100); };
+  hooks.pump = [&] {
+    ordered = ordered && moduleLoaded && !viewAlive;
+    if (callbackPending) {
+      callbackPending = false;
+      callbackDelivered = true;
+      events.push_back("late controller Close");
+    }
+  };
+  hooks.scan = [&](const auto &) {
+    return callbackPending ? std::vector<DWORD>{123} : std::vector<DWORD>{};
+  };
+  try {
+    TestCleanup module([&] {
+      drained = waitForWebViewsExit({LR"(G:\module-profile)"}, std::chrono::seconds(2), hooks);
+      moduleLoaded = false;
+      events.push_back("FreeLibrary");
+    });
+    TestCleanup view([&] { viewAlive = false; callbackPending = true; events.push_back("destroy view"); });
+    throw std::runtime_error("injected body failure");
+  } catch (const std::runtime_error &) {}
+  expect(ordered && drained && callbackDelivered && !moduleLoaded && events == std::vector<std::string>{
+             "destroy view", "late controller Close", "FreeLibrary"},
+         "failure unwind preserves destroy -> pumping drain -> module unload ordering");
+}
+
 void testScopedStorageEnvironment() {
   const std::initializer_list<const wchar_t *> names{
       L"MIV_SOUND_DATA_DIR", L"APPDATA", L"HOME", L"USERPROFILE", L"WEBVIEW2_USER_DATA_FOLDER"};
@@ -83,6 +175,36 @@ NTSTATUS commandLineReply(const std::wstring &command, void *buffer, ULONG capac
   return 0;
 }
 
+void testTerminatingProcessPumpsOwnerSTA() {
+  struct State { DWORD owner = GetCurrentThreadId(); bool delivered = false; bool ownerThread = false; } state;
+  WNDCLASSW windowClass{};
+  windowClass.hInstance = GetModuleHandleW(nullptr);
+  windowClass.lpszClassName = L"mIVSoundTerminatingProcessWaitTest";
+  windowClass.lpfnWndProc = [](HWND window, UINT message, WPARAM wParam, LPARAM lParam) -> LRESULT {
+    if (message == WM_APP + 1) {
+      auto &state = *reinterpret_cast<State *>(lParam);
+      state.delivered = true;
+      state.ownerThread = state.owner == GetCurrentThreadId();
+      return 0;
+    }
+    return DefWindowProcW(window, message, wParam, lParam);
+  };
+  expect(RegisterClassW(&windowClass) != 0, "register the owner STA message window");
+  TestCleanup unregister([&] { UnregisterClassW(windowClass.lpszClassName, windowClass.hInstance); });
+  const auto window = CreateWindowExW(0, windowClass.lpszClassName, L"", 0, 0, 0, 0, 0,
+                                      HWND_MESSAGE, nullptr, windowClass.hInstance, nullptr);
+  expect(window != nullptr, "create the owner STA message window");
+  TestCleanup destroy([&] { DestroyWindow(window); });
+  expect(PostMessageW(window, WM_APP + 1, 0, reinterpret_cast<LPARAM>(&state)) != 0,
+         "queue an owner STA completion before waiting for termination");
+  unsigned waits = 0;
+  const auto result = readProcessCommandLine(42,
+      [](void *, ULONG, ULONG *required) { *required = 0; return kTerminating; },
+      [&](DWORD) { return ++waits == 9 ? WAIT_OBJECT_0 : WAIT_TIMEOUT; });
+  expect(result.empty() && waits == 9 && state.delivered && state.ownerThread,
+         "the slow terminating-process wait dispatches completions on the owner STA");
+}
+
 void testCommandLineQueryRaces() {
   unsigned queries = 0;
   const auto unavailable = [&](void *, ULONG, ULONG *size) {
@@ -96,21 +218,34 @@ void testCommandLineQueryRaces() {
   unsigned waits = 0;
   const auto terminating = readProcessCommandLine(42, unavailable, [&](DWORD timeout) {
     expect(timeout == (waits == 0 ? 0u : 50u), "exit checks use a bounded wait on the same handle");
-    return ++waits == 3 ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
+    return ++waits == 9 ? WAIT_OBJECT_0 : WAIT_TIMEOUT;
   });
-  expect(terminating.empty() && queries == 2,
-         "termination during sizing can precede handle signalling and is retried");
+  expect(terminating.empty() && queries == 1 && waits == 9,
+         "known termination during sizing waits past the old retry limit until the SAME handle signals");
 
   const std::wstring command = LR"(msedgewebview2.exe --user-data-dir="G:\test space\webview\EBWebView")";
   queries = 0;
+  waits = 0;
   const auto duringRead = readProcessCommandLine(42,
       [&](void *buffer, ULONG size, ULONG *required) {
         ++queries;
         if (buffer == nullptr) return commandLineReply(command, buffer, size, required);
         return kTerminating;
-      }, [](DWORD timeout) { return timeout == 0 ? WAIT_TIMEOUT : WAIT_OBJECT_0; });
-  expect(duringRead.empty() && queries == 2,
-         "a process exiting between sizing and reading is removed from the wait set");
+      }, [&](DWORD) { return ++waits == 9 ? WAIT_OBJECT_0 : WAIT_TIMEOUT; });
+  expect(duringRead.empty() && queries == 2 && waits == 9,
+         "known termination during reading also waits past the old retry limit without failing");
+
+  for (DWORD code : {0u, 1u, 0xc0000005u}) {
+    queries = 0;
+    waits = 0;
+    unsigned exitChecks = 0;
+    const auto exitedWithUnreadableCommand = readProcessCommandLine(42,
+        [&](void *, ULONG, ULONG *required) { ++queries; *required = 0; return kAccessDenied; },
+        [&](DWORD) { return ++waits == 9 ? WAIT_OBJECT_0 : WAIT_TIMEOUT; },
+        [&] { ++exitChecks; return code; });
+    expect(exitedWithUnreadableCommand.empty() && queries == 1 && waits == 9 && exitChecks == 1,
+           "a non-STILL_ACTIVE exit code waits for handle signalling even with an unrelated query error");
+  }
 
   queries = 0;
   const auto resized = readProcessCommandLine(42,
@@ -135,7 +270,7 @@ void testCommandLineQueryRaces() {
               return commandLineReply(command, buffer, size, required);
             *required = 0;
             return kAccessDenied;
-          }, [&](DWORD) { ++waits; return WAIT_TIMEOUT; });
+          }, [&](DWORD) { ++waits; return WAIT_TIMEOUT; }, [] { return STILL_ACTIVE; });
     } catch (const std::runtime_error &error) {
       const std::string message(error.what());
       rejected = message.find("PID 42") != std::string::npos &&
@@ -168,6 +303,15 @@ void testCommandLineQueryRaces() {
   } catch (const std::runtime_error &) { waitFailureRejected = true; }
   expect(waitFailureRejected, "a failed exit check cannot be treated as a finished process");
 
+  waitFailureRejected = false;
+  waits = 0;
+  try {
+    (void)readProcessCommandLine(42, unavailable,
+        [&](DWORD) { return ++waits == 1 ? WAIT_TIMEOUT : WAIT_FAILED; });
+  } catch (const std::runtime_error &) { waitFailureRejected = true; }
+  expect(waitFailureRejected && waits == 2,
+         "known termination still requires a successful handle wait, never just its NTSTATUS");
+
   expect(processCommandLine(GetCurrentProcess(), GetCurrentProcessId()) == GetCommandLineW(),
          "the native query adapter reads this test process without starting a WebView");
 }
@@ -177,6 +321,10 @@ int main() {
   suppressCrtModalDialogs();
   try {
     testScopedStorageEnvironment();
+    testPauseReleaseBeforeJoin();
+    testFailedWaitStillDrainsEveryProfile();
+    testDrainKeepsModuleAndOwnerStateAlive();
+    testTerminatingProcessPumpsOwnerSTA();
     testCommandLineQueryRaces();
     const std::filesystem::path folder = LR"(G:\test space\webview\EBWebView)";
     expect(commandUsesProfile(LR"(msedgewebview2.exe --user-data-dir="G:\test space\webview\EBWebView")", folder),
@@ -216,9 +364,6 @@ int main() {
                  expect(path == folder, "wait targets exactly webview/EBWebView");
                  return ++polls < 3 ? std::vector<DWORD>{123, 456} : std::vector<DWORD>{};
                }), "wait includes browser and renderer until both have exited");
-    expect(!waitForWebViewExit(folder, std::chrono::milliseconds(10),
-                [](const auto &) { return std::vector<DWORD>{123}; }),
-           "process exit timeout is a failure, never a successful kill");
     testDeadline = std::chrono::steady_clock::now();
     bool timedOut = false;
     destroyed = false;
