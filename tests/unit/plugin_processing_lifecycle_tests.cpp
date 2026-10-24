@@ -913,6 +913,15 @@ void expect(const bool condition, const std::string &message) {
   }
 }
 
+void waitForWorkerStart(const std::atomic_bool &started) {
+  const auto deadline = effetune::vst::testing::webViewTestDeadlineAfter(std::chrono::seconds(20));
+  while (!started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline) {
+    std::this_thread::yield();
+  }
+  expect(started.load(std::memory_order_acquire) && std::chrono::steady_clock::now() < deadline,
+         "the worker reached its start handshake before the deadline");
+}
+
 // Holds processingResourcesMutex_ on another thread for the lifetime of the
 // scope. It stands in for a control thread that is mid-edit while blocks keep
 // arriving, which is the case the audio callback used to try_lock.
@@ -3136,6 +3145,7 @@ void testControlServiceEditsNeverCostAProcessedBlock() {
       PluginProcessorTestAccess::processFailureSequence(*processor);
 
   std::atomic_bool running{true};
+  std::atomic_bool serviceStarted{false};
   std::atomic<std::uint64_t> serviceTicks{0};
   std::atomic_bool published{true};
   // The command is built once: the Debug allocation guard is process-wide, so
@@ -3152,6 +3162,7 @@ void testControlServiceEditsNeverCostAProcessedBlock() {
     try {
       auto observedEpoch = PluginProcessorTestAccess::blockEpoch(*processor);
       std::uint32_t step = 0;
+      serviceStarted.store(true, std::memory_order_release);
       while (running.load(std::memory_order_acquire)) {
         // A host runs the audio callback far more often than the 50 ms control
         // service, so the service only runs once a block has gone by. That keeps
@@ -3180,22 +3191,32 @@ void testControlServiceEditsNeverCostAProcessedBlock() {
     }
   });
 
-  constexpr std::uint64_t blocks = 1500;
+  waitForWorkerStart(serviceStarted);
+  const auto serviceTicksBefore = serviceTicks.load(std::memory_order_acquire);
+  const auto measurementDeadline =
+      effetune::vst::testing::webViewTestDeadlineAfter(std::chrono::seconds(20));
+  constexpr std::uint64_t minimumBlocks = 1500;
+  std::uint64_t blocks = 0;
   auto wetBlocks = std::uint64_t{0};
-  for (std::uint64_t block = 0; block < blocks; ++block) {
+  for (; (blocks < minimumBlocks || serviceTicks.load(std::memory_order_acquire) == serviceTicksBefore) &&
+         std::chrono::steady_clock::now() < measurementDeadline; ++blocks) {
     outputLeft.fill(0.0f);
     outputRight.fill(0.0f);
     expect(processor->process(data) == kResultOk,
            "process a block while the control service edits parameters");
     wetBlocks += outputLeft[0] > 1.0f + 1.0e-4f ? 1u : 0u;
   }
+  const auto serviceProgressed = serviceTicks.load(std::memory_order_acquire) > serviceTicksBefore;
+  const auto measurementFinishedInTime = std::chrono::steady_clock::now() < measurementDeadline;
   running.store(false, std::memory_order_release);
   control.join();
 
   const auto after = PluginProcessorTestAccess::processCounters(*processor);
   expect(published.load(std::memory_order_acquire),
          "every parameter image reached the mailbox");
-  expect(serviceTicks.load(std::memory_order_acquire) != 0,
+  expect(blocks >= minimumBlocks && measurementFinishedInTime,
+         "the concurrent control measurement finishes its minimum blocks before the deadline");
+  expect(serviceProgressed,
          "the control service really ran alongside the audio callback");
   expect(after.batchAttempts - before.batchAttempts == blocks,
          "every block entered the engine instead of falling back to the input");
@@ -5099,6 +5120,7 @@ void testUiPacedControlServiceKeepsEveryBlockWet() {
   const auto failuresBefore =
       PluginProcessorTestAccess::processFailureSequence(*processor);
   std::atomic_bool running{true};
+  std::atomic_bool serviceStarted{false};
   std::atomic_bool published{true};
   std::atomic<std::uint64_t> serviceTicks{0};
   // Built once: the Debug allocation guard is process-wide, so this thread must
@@ -5106,6 +5128,7 @@ void testUiPacedControlServiceKeepsEveryBlockWet() {
   auto command = std::make_unique<effetune::vst::AudioCommand>();
   effetune::vst::testing::TestThread control([&](const std::stop_token stop) {
     std::uint32_t step = 0;
+    serviceStarted.store(true, std::memory_order_release);
     while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       const auto offset = 0.25f + static_cast<float>(step++ % 8u) * 0.03125f;
       if (!PluginProcessorTestAccess::publishParameterImage(
@@ -5122,22 +5145,32 @@ void testUiPacedControlServiceKeepsEveryBlockWet() {
     }
   });
 
-  constexpr std::uint64_t blocks = 1500;
+  waitForWorkerStart(serviceStarted);
+  const auto serviceTicksBefore = serviceTicks.load(std::memory_order_acquire);
+  const auto measurementDeadline =
+      effetune::vst::testing::webViewTestDeadlineAfter(std::chrono::seconds(20));
+  constexpr std::uint64_t minimumBlocks = 1500;
+  std::uint64_t blocks = 0;
   auto wetBlocks = std::uint64_t{0};
-  for (std::uint64_t block = 0; block < blocks; ++block) {
+  for (; (blocks < minimumBlocks || serviceTicks.load(std::memory_order_acquire) == serviceTicksBefore) &&
+         std::chrono::steady_clock::now() < measurementDeadline; ++blocks) {
     outputLeft.fill(0.0f);
     outputRight.fill(0.0f);
     expect(processor->process(data) == kResultOk,
            "process a block while the service runs faster than blocks arrive");
     wetBlocks += outputLeft[0] > 1.0f + 1.0e-4f ? 1u : 0u;
   }
+  const auto serviceProgressed = serviceTicks.load(std::memory_order_acquire) > serviceTicksBefore;
+  const auto measurementFinishedInTime = std::chrono::steady_clock::now() < measurementDeadline;
   running.store(false, std::memory_order_release);
   control.join();
 
   const auto after = PluginProcessorTestAccess::processCounters(*processor);
   expect(published.load(std::memory_order_acquire),
          "every parameter image reached the mailbox");
-  expect(serviceTicks.load(std::memory_order_acquire) != 0,
+  expect(blocks >= minimumBlocks && measurementFinishedInTime,
+         "the concurrent control measurement finishes its minimum blocks before the deadline");
+  expect(serviceProgressed,
          "the control service really ran alongside the audio callback");
   expect(after.batchAttempts - before.batchAttempts == blocks &&
              after.completedBatches - before.completedBatches == blocks,
@@ -5594,20 +5627,31 @@ void testNamedAutomationEditSurvivesAConcurrentDrain() {
 
   std::mutex drainMutex;
   std::atomic_bool running{true};
+  std::atomic_bool drainStarted{false};
+  std::atomic<std::uint64_t> drainTicks{0};
   std::atomic_bool draining{true};
   effetune::vst::testing::TestThread drain([&](const std::stop_token stop) {
+    drainStarted.store(true, std::memory_order_release);
     while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       {
         std::scoped_lock lock(drainMutex);
         if (draining.load(std::memory_order_acquire)) {
           PluginProcessorTestAccess::drainAutomationValues(*processor);
+          drainTicks.fetch_add(1, std::memory_order_acq_rel);
         }
       }
       std::this_thread::yield();
     }
   });
 
-  for (int iteration = 0; iteration < 400; ++iteration) {
+  waitForWorkerStart(drainStarted);
+  const auto drainTicksBefore = drainTicks.load(std::memory_order_acquire);
+  const auto measurementDeadline =
+      effetune::vst::testing::webViewTestDeadlineAfter(std::chrono::seconds(20));
+  constexpr int minimumIterations = 400;
+  int iteration = 0;
+  for (; (iteration < minimumIterations || drainTicks.load(std::memory_order_acquire) == drainTicksBefore) &&
+         std::chrono::steady_clock::now() < measurementDeadline; ++iteration) {
     // Leave one published value undrained, which is what the transaction has
     // to supersede.
     expect(processor->process(flush) == kResultOk,
@@ -5628,8 +5672,12 @@ void testNamedAutomationEditSurvivesAConcurrentDrain() {
                std::to_string(iteration) + " kept " + std::to_string(offset) + ")");
     draining.store(true, std::memory_order_release);
   }
+  const auto drainProgressed = drainTicks.load(std::memory_order_acquire) > drainTicksBefore;
+  const auto measurementFinishedInTime = std::chrono::steady_clock::now() < measurementDeadline;
   running.store(false, std::memory_order_release);
   drain.join();
+  expect(iteration >= minimumIterations && measurementFinishedInTime && drainProgressed,
+         "the drain progresses alongside the named edits before the measurement deadline");
 
   expect(processor->setActive(false) == kResultOk,
          "deactivate the named-edit drain race test");
@@ -5741,6 +5789,7 @@ void testDelayBearingEditsDuringPlaybackKeepEveryBlockWet() {
   const auto failuresBefore =
       PluginProcessorTestAccess::processFailureSequence(*processor);
   std::atomic_bool running{true};
+  std::atomic_bool serviceStarted{false};
   std::atomic_bool published{true};
   std::atomic<std::uint64_t> serviceTicks{0};
   // Reuse the mailbox payload throughout the gesture.
@@ -5748,6 +5797,7 @@ void testDelayBearingEditsDuringPlaybackKeepEveryBlockWet() {
   std::array<float, 6> packed{0.0f, 100.0f, 3.0f, 1.0f, 0.0f, -1.0f};
   effetune::vst::testing::TestThread control([&](const std::stop_token stop) {
     std::uint32_t step = 0;
+    serviceStarted.store(true, std::memory_order_release);
     while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       // Lookahead is the delay-bearing parameter: every distinct value moves
       // the instance latency and therefore the compensation plan.
@@ -5763,18 +5813,28 @@ void testDelayBearingEditsDuringPlaybackKeepEveryBlockWet() {
     }
   });
 
-  constexpr std::uint64_t blocks = 1500;
-  for (std::uint64_t block = 0; block < blocks; ++block) {
+  waitForWorkerStart(serviceStarted);
+  const auto serviceTicksBefore = serviceTicks.load(std::memory_order_acquire);
+  const auto measurementDeadline =
+      effetune::vst::testing::webViewTestDeadlineAfter(std::chrono::seconds(20));
+  constexpr std::uint64_t minimumBlocks = 1500;
+  std::uint64_t blocks = 0;
+  for (; (blocks < minimumBlocks || serviceTicks.load(std::memory_order_acquire) == serviceTicksBefore) &&
+         std::chrono::steady_clock::now() < measurementDeadline; ++blocks) {
     expect(processor->process(data) == kResultOk,
            "process a block while a delay-bearing parameter is dragged");
   }
+  const auto serviceProgressed = serviceTicks.load(std::memory_order_acquire) > serviceTicksBefore;
+  const auto measurementFinishedInTime = std::chrono::steady_clock::now() < measurementDeadline;
   running.store(false, std::memory_order_release);
   control.join();
 
   const auto after = PluginProcessorTestAccess::processCounters(*processor);
   expect(published.load(std::memory_order_acquire),
          "every delay-bearing image reached the mailbox");
-  expect(serviceTicks.load(std::memory_order_acquire) != 0,
+  expect(blocks >= minimumBlocks && measurementFinishedInTime,
+         "the concurrent control measurement finishes its minimum blocks before the deadline");
+  expect(serviceProgressed,
          "the control service really ran alongside the audio callback");
   expect(after.batchAttempts - before.batchAttempts == blocks &&
              after.completedBatches - before.completedBatches == blocks,
@@ -6534,13 +6594,11 @@ void testGateClosesInsideTheControlLock() {
                          std::memory_order_release);
       completed.store(true, std::memory_order_release);
     });
-    while (!started.load(std::memory_order_acquire)) {
-      std::this_thread::yield();
-    }
+    waitForWorkerStart(started);
     // The reconfiguration is waiting for the control lock the guard holds. It
     // has touched nothing yet, so every block in the meantime still reaches the
-    // engine and comes back wet. Nothing is asserted before the thread is
-    // joined: an assertion that throws here would leave it joinable.
+    // engine and comes back wet. Keep block checks until after join; on a failed
+    // start handshake, the guard releases the lock during unwind before joining.
     for (int block = 0; block < 128; ++block) {
       rig.outputLeft.fill(0.0f);
       rig.outputRight.fill(0.0f);
@@ -6662,13 +6720,18 @@ void testTopologyEditsDuringPlaybackRaiseNoDiagnostic() {
   // guard is what the RT-allocation tests measure; here it only has to stop
   // aborting, and nothing in this test reads the violation count.
   effetune::allocation_guard::setAbortOnViolationForTesting(false);
+  effetune::vst::testing::TestCleanup restoreAllocationGuard([] {
+    effetune::allocation_guard::setAbortOnViolationForTesting(true);
+  });
   std::atomic_bool running{true};
+  std::atomic_bool editorStarted{false};
   std::atomic_bool accepted{true};
   std::atomic<std::uint64_t> edits{0};
   effetune::vst::testing::TestThread editor([&](const std::stop_token stop) {
     const std::array<const char *, 3> routes{rebuildMessage, addNodeMessage,
                                              restoreMessage};
     std::size_t step = 0;
+    editorStarted.store(true, std::memory_order_release);
     while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       const auto response = choc::json::parse(
           processor->handleUiMessage(routes[step++ % routes.size()]));
@@ -6680,20 +6743,29 @@ void testTopologyEditsDuringPlaybackRaiseNoDiagnostic() {
     }
   });
 
-  // Nothing is asserted while the editor thread runs: an assertion that throws
-  // here would leave it joinable.
+  waitForWorkerStart(editorStarted);
+  const auto editsBefore = edits.load(std::memory_order_acquire);
+  const auto measurementDeadline =
+      effetune::vst::testing::webViewTestDeadlineAfter(std::chrono::seconds(20));
   auto rendered = true;
-  for (int block = 0; block < 3000; ++block) {
+  constexpr std::uint64_t minimumBlocks = 3000;
+  std::uint64_t blocks = 0;
+  for (; (blocks < minimumBlocks || edits.load(std::memory_order_acquire) - editsBefore < 3u) &&
+         std::chrono::steady_clock::now() < measurementDeadline; ++blocks) {
     rendered = rendered && processor->process(rig.data) == kResultOk;
   }
+  const auto editsDuringMeasurement = edits.load(std::memory_order_acquire) - editsBefore;
+  const auto measurementFinishedInTime = std::chrono::steady_clock::now() < measurementDeadline;
   running.store(false, std::memory_order_release);
   editor.join();
-  effetune::allocation_guard::setAbortOnViolationForTesting(true);
+  restoreAllocationGuard.run();
+  expect(blocks >= minimumBlocks && measurementFinishedInTime,
+         "the concurrent topology measurement finishes its minimum blocks before the deadline");
 
   expect(rendered, "process a block while the pipeline topology is edited");
   expect(accepted.load(std::memory_order_acquire),
          "every topology edit is accepted");
-  expect(edits.load(std::memory_order_acquire) >= 3u,
+  expect(editsDuringMeasurement >= 3u,
          "the editor really ran all three topology routes alongside the blocks");
   const auto reported = hostInfo(*processor);
   std::string reportedMessages;
@@ -6878,6 +6950,7 @@ void testDelayBearingEditsWithAStoppedTransportKeepEveryBlockWet() {
   const auto failuresBefore =
       PluginProcessorTestAccess::processFailureSequence(*processor);
   std::atomic_bool running{true};
+  std::atomic_bool serviceStarted{false};
   std::atomic_bool published{true};
   std::atomic<std::uint64_t> serviceTicks{0};
   // Reuse the mailbox payload throughout the gesture.
@@ -6885,6 +6958,7 @@ void testDelayBearingEditsWithAStoppedTransportKeepEveryBlockWet() {
   std::array<float, 6> packed{0.0f, 100.0f, 3.0f, 1.0f, 0.0f, -1.0f};
   effetune::vst::testing::TestThread control([&](const std::stop_token stop) {
     std::uint32_t step = 0;
+    serviceStarted.store(true, std::memory_order_release);
     while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       // Lookahead is the delay-bearing parameter: every distinct value moves
       // the instance latency and therefore the compensation plan.
@@ -6903,14 +6977,20 @@ void testDelayBearingEditsWithAStoppedTransportKeepEveryBlockWet() {
     }
   });
 
-  // Nothing is asserted while the control thread runs: an assertion that threw
-  // here would leave it joinable.
-  constexpr std::uint64_t blocks = 1500;
+  waitForWorkerStart(serviceStarted);
+  const auto serviceTicksBefore = serviceTicks.load(std::memory_order_acquire);
+  const auto measurementDeadline =
+      effetune::vst::testing::webViewTestDeadlineAfter(std::chrono::seconds(20));
+  constexpr std::uint64_t minimumBlocks = 1500;
+  std::uint64_t blocks = 0;
   auto rendered = true;
-  for (std::uint64_t block = 0; block < blocks; ++block) {
+  for (; (blocks < minimumBlocks || serviceTicks.load(std::memory_order_acquire) == serviceTicksBefore) &&
+         std::chrono::steady_clock::now() < measurementDeadline; ++blocks) {
     rendered = rendered && processor->process(rig.data) == kResultOk;
     context.projectTimeSamples += rig.data.numSamples;
   }
+  const auto serviceProgressed = serviceTicks.load(std::memory_order_acquire) > serviceTicksBefore;
+  const auto measurementFinishedInTime = std::chrono::steady_clock::now() < measurementDeadline;
   running.store(false, std::memory_order_release);
   control.join();
 
@@ -6920,7 +7000,9 @@ void testDelayBearingEditsWithAStoppedTransportKeepEveryBlockWet() {
          "transport stopped");
   expect(published.load(std::memory_order_acquire),
          "every delay-bearing image reached the mailbox");
-  expect(serviceTicks.load(std::memory_order_acquire) != 0,
+  expect(blocks >= minimumBlocks && measurementFinishedInTime,
+         "the concurrent control measurement finishes its minimum blocks before the deadline");
+  expect(serviceProgressed,
          "the control service really ran alongside the audio callback");
   expect(after.batchAttempts - before.batchAttempts == blocks &&
              after.completedBatches - before.completedBatches == blocks,
@@ -11197,9 +11279,7 @@ void testSetParamNormalizedAloneReachesTheSavedState() {
         *processor);
     committerCompleted.store(true, std::memory_order_release);
   }, [&] { if (heldResources.owns_lock()) heldResources.unlock(); PluginProcessorTestAccess::endSyntheticBlockIfActive(*processor); });
-  while (!committerStarted.load(std::memory_order_acquire)) {
-    std::this_thread::yield();
-  }
+  waitForWorkerStart(committerStarted);
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
   const auto waitedForResources =
       !committerCompleted.load(std::memory_order_acquire);
