@@ -108,6 +108,11 @@ endif()
 add_test(NAME effetune_file_exchange_tests COMMAND effetune_file_exchange_tests)
 
 if(WIN32 AND TARGET effetune_plugin)
+  add_executable(effetune_webview_test_lifetime_tests unit/webview_test_lifetime_tests.cpp)
+  target_compile_features(effetune_webview_test_lifetime_tests PRIVATE cxx_std_20)
+  target_compile_options(effetune_webview_test_lifetime_tests PRIVATE /W4 /WX /utf-8)
+  target_link_libraries(effetune_webview_test_lifetime_tests PRIVATE shell32 user32)
+  add_test(NAME effetune_webview_test_lifetime_tests COMMAND effetune_webview_test_lifetime_tests)
   add_executable(miv_sound_tests unit/miv_sound_tests.cpp)
   target_link_libraries(miv_sound_tests PRIVATE sdk effetune_engine version)
   target_compile_features(miv_sound_tests PRIVATE cxx_std_20)
@@ -242,6 +247,15 @@ if(APPLE AND TARGET effetune_plugin)
 endif()
 
 if(WIN32 AND TARGET validator AND TARGET effetune_plugin)
+  # Give the unmodified SDK validator the same RAII/browser-exit boundary as
+  # our own hosts. Only its entry point is renamed, in the build tree.
+  set_property(SOURCE
+    "${vst3sdk_SOURCE_DIR}/public.sdk/samples/vst-hosting/validator/source/main.cpp"
+    TARGET_DIRECTORY validator APPEND PROPERTY COMPILE_DEFINITIONS
+    wmain=mivSoundValidatorMain)
+  target_sources(validator PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/support/validator_main.cpp")
+  target_compile_features(validator PRIVATE cxx_std_20)
+  target_link_libraries(validator PRIVATE shell32)
   add_test(NAME effetune_vst3_validator
     COMMAND $<TARGET_FILE:validator>
             "${CMAKE_BINARY_DIR}/VST3/$<CONFIG>/${EFFETUNE_PLUGIN_PACKAGE_NAME}.vst3")
@@ -270,3 +284,12 @@ foreach(effetune_test IN LISTS effetune_registered_tests)
   set_property(TEST "${effetune_test}" APPEND PROPERTY ENVIRONMENT
     "MIV_SOUND_DATA_DIR=${CMAKE_CURRENT_BINARY_DIR}/miv-sound-test-data/${effetune_test}")
 endforeach()
+
+if(WIN32 AND TARGET effetune_plugin)
+  # CTest's hard process timeout skips COM/controller destruction. Deadlines are
+  # checked by the common test host at safe unwind boundaries instead. Never
+  # terminate an owner STA while its WebView2 processes are still alive.
+  set_tests_properties(effetune_webview_smoke effetune_now_playing_metadata_tests
+    effetune_plugin_processing_lifecycle_tests effetune_plugin_view_scaling_tests
+    effetune_vst3_validator miv_sound_tests PROPERTIES TIMEOUT 0)
+endif()

@@ -20,13 +20,17 @@
 #include <string>
 #include <vector>
 
-#include "../support/crt_dialog_suppression.h"
+#include "../support/webview_test_lifetime.h"
+#include "../support/scoped_test_environment.h"
 
 namespace {
 using namespace Steinberg;
 using namespace Steinberg::Vst;
 using namespace effetune::vst;
 namespace fs = std::filesystem;
+using testing::ScopedTestEnvironment;
+constexpr std::initializer_list<const wchar_t *> kStorageVariables{
+    L"MIV_SOUND_DATA_DIR", L"APPDATA", L"HOME", L"USERPROFILE", L"WEBVIEW2_USER_DATA_FOLDER"};
 
 void expect(bool condition, const char *message) {
   if (!condition) throw std::runtime_error(message);
@@ -94,17 +98,17 @@ void testIdentity(Plugin &dll, const char *path) {
 }
 
 void testInvalidDirectories(Plugin &dll, const fs::path &root) {
-  const auto previousDirectory = fs::current_path();
-  const auto sandbox = root / "invalid";
-  fs::create_directories(sandbox);
+  ScopedTestEnvironment environment(kStorageVariables, testing::webViewCleanupFailed);
+  const auto sandbox = testing::recreateTestSandbox(root, L"invalid");
+  environment.set(L"WEBVIEW2_USER_DATA_FOLDER", nullptr);
   fs::current_path(sandbox);
   const auto appData = sandbox / "appdata";
   const auto home = sandbox / "home";
-  SetEnvironmentVariableW(L"APPDATA", appData.c_str());
-  SetEnvironmentVariableW(L"HOME", home.c_str());
-  SetEnvironmentVariableW(L"USERPROFILE", home.c_str());
+  environment.set(L"APPDATA", appData.c_str());
+  environment.set(L"HOME", home.c_str());
+  environment.set(L"USERPROFILE", home.c_str());
   for (const wchar_t *value : {static_cast<const wchar_t *>(nullptr), L"", L"relative", L"C:relative", L"\\root-relative"}) {
-    SetEnvironmentVariableW(L"MIV_SOUND_DATA_DIR", value);
+    environment.set(L"MIV_SOUND_DATA_DIR", value);
     ConfigStore config;
     PresetStore presets;
     std::string content;
@@ -113,18 +117,72 @@ void testInvalidDirectories(Plugin &dll, const fs::path &root) {
                !presets.exists("effetune_presets.json") &&
                !presets.read("effetune_plugin_presets.json", content) &&
                !presets.write("effetune_plugin_presets.json", "{}"), "invalid stores refuse all I/O");
-    auto *component = dll.create();
+    auto component = owned(dll.create());
     // Changing the environment after construction cannot repair invalid stores.
-    SetEnvironmentVariableW(L"MIV_SOUND_DATA_DIR", root.c_str());
+    environment.set(L"MIV_SOUND_DATA_DIR", root.c_str());
     expect(component->initialize(nullptr) == kInvalidArgument, "invalid storage fails initialize");
-    component->release();
     expect(fs::is_empty(sandbox), "failed startup writes nothing to cwd, APPDATA or home");
   }
-  fs::current_path(previousDirectory);
+}
+
+void testWebViewDataDirectoryOverride(Plugin &dll, const fs::path &root) {
+  {
+    ScopedTestEnvironment environment(kStorageVariables, testing::webViewCleanupFailed);
+    const auto sandbox = testing::recreateTestSandbox(root, L"webview-override");
+    fs::current_path(sandbox);
+    const auto data = sandbox / "sound-data";
+    const auto override = sandbox / "unexpected-webview-data";
+    const auto appData = sandbox / "appdata";
+    const auto home = sandbox / "home";
+    environment.set(L"MIV_SOUND_DATA_DIR", data.c_str());
+    environment.set(L"APPDATA", appData.c_str());
+    environment.set(L"HOME", home.c_str());
+    environment.set(L"USERPROFILE", home.c_str());
+    for (const wchar_t *value : {override.c_str(), L"relative", L" "}) {
+      environment.set(L"WEBVIEW2_USER_DATA_FOLDER", value);
+      const auto resolved = resolveSoundDataDirectory();
+      expect(resolved.path.empty() && resolved.error != nullptr &&
+                 std::string(resolved.error) == kWebViewDataDirectoryOverrideError,
+             "a non-empty WebView2 override has a distinct storage diagnostic");
+      ConfigStore config;
+      PresetStore presets;
+      std::string content;
+      expect(config.path().empty() && presets.presetPath().empty() &&
+                 !config.load(content) && !config.save("{}") &&
+                 !presets.write("effetune_presets.json", "{}") &&
+                 !presets.write("effetune_plugin_presets.json", "{}"),
+             "the common resolver disables store I/O when WebView2 overrides storage");
+      auto component = owned(dll.create());
+      expect(component->initialize(nullptr) == kInvalidArgument,
+             "WebView2 storage override fails initialize");
+
+      environment.set(L"WEBVIEW2_USER_DATA_FOLDER", nullptr);
+      component = owned(dll.create());
+      environment.set(L"WEBVIEW2_USER_DATA_FOLDER", value);
+      expect(component->initialize(nullptr) == kInvalidArgument,
+             "an override introduced after construction also fails initialize");
+      expect(fs::is_empty(sandbox),
+             "rejected startup creates no config, WebView, override, APPDATA or cwd files");
+    }
+  } // Restore HOME/USERPROFILE/APPDATA and cwd before any valid initialization.
+  ScopedTestEnvironment environment(kStorageVariables, testing::webViewCleanupFailed);
+  environment.set(L"MIV_SOUND_DATA_DIR", root.c_str());
+  for (const wchar_t *value : {static_cast<const wchar_t *>(nullptr), L""}) {
+    environment.set(L"WEBVIEW2_USER_DATA_FOLDER", value);
+    const auto resolved = resolveSoundDataDirectory();
+    expect(resolved.path == root && resolved.error == nullptr,
+           "an absent or empty WebView2 override permits mIV storage");
+    auto component = owned(dll.create());
+    expect(component->initialize(nullptr) == kResultOk,
+           "an absent or empty WebView2 override permits startup");
+    expect(component->terminate() == kResultOk, "terminate valid storage component");
+  }
 }
 
 void testStores(const fs::path &root) {
-  SetEnvironmentVariableW(L"MIV_SOUND_DATA_DIR", root.c_str());
+  ScopedTestEnvironment environment(kStorageVariables, testing::webViewCleanupFailed);
+  environment.set(L"WEBVIEW2_USER_DATA_FOLDER", nullptr);
+  environment.set(L"MIV_SOUND_DATA_DIR", root.c_str());
   ConfigStore config;
   PresetStore presets;
   expect(config.path() == root / "plugin" / "config.json" &&
@@ -146,7 +204,7 @@ void testLegacyState(Plugin &dll, const char *fixture) {
   for (const auto &oldVersion : {std::string("0.14.0"), std::string("0.11.1")}) {
     auto document = json;
     document.replace(document.find("0.14.0"), 6, oldVersion);
-    auto *component = dll.create();
+    auto component = owned(dll.create());
     expect(component->initialize(nullptr) == kResultOk, "valid directory allows startup");
     ResizableMemoryIBStream state;
     expect(state.write(document.data(), static_cast<int32>(document.size()), nullptr) == kResultTrue, "load raw JSON without base64");
@@ -170,21 +228,26 @@ void testLegacyState(Plugin &dll, const char *fixture) {
     saved.rewind();
     expect(component->setState(&saved) == kResultOk, "saved state is accepted again");
     expect(component->terminate() == kResultOk, "terminate restored component");
-    component->release();
   }
 }
 } // namespace
 
-int main(int argc, char **argv) {
+int runTestBody(int argc, char **argv) {
   effetune::vst::testing::suppressCrtModalDialogs();
   try {
     expect(argc == 3, "expected DLL and fixture paths");
     const auto root = soundDataDirectory();
     expect(!root.empty(), "CTest supplies an isolated test directory");
     Plugin dll(argv[1]);
+    effetune::vst::testing::checkWebViewTestDeadline();
     testIdentity(dll, argv[1]);
+    effetune::vst::testing::checkWebViewTestDeadline();
     testInvalidDirectories(dll, root);
+    effetune::vst::testing::checkWebViewTestDeadline();
+    testWebViewDataDirectoryOverride(dll, root);
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStores(root);
+    effetune::vst::testing::checkWebViewTestDeadline();
     testLegacyState(dll, argv[2]);
     std::cout << "mIV Sound identity, storage isolation and shipped-state compatibility verified\n";
     return 0;
@@ -192,4 +255,8 @@ int main(int argc, char **argv) {
     std::cerr << error.what() << '\n';
     return 1;
   }
+}
+
+int main(const int argc, char **argv) {
+  return effetune::vst::testing::runWebViewTest([&] { return runTestBody(argc, argv); });
 }

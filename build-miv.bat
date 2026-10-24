@@ -8,9 +8,8 @@ set "PATH=C:\Program Files\CMake\bin;C:\Program Files (x86)\Microsoft Visual Stu
 set MSBUILDDISABLENODEREUSE=1
 cd /d "%~dp0" || exit /b 1
 node -e "process.exit(process.versions.node.split('.')[0] === '22' ? 0 : 1)" || exit /b 1
-set "MIV_FETCH_OPTION=-DFETCHCONTENT_FULLY_DISCONNECTED=OFF"
-if exist "build\windows-release\_deps\vst3sdk-src\CMakeLists.txt" set "MIV_FETCH_OPTION=-DFETCHCONTENT_FULLY_DISCONNECTED=ON"
-cmake --preset windows-release "-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /wd4458" %MIV_FETCH_OPTION% || exit /b 2
+rem Clear the legacy cache switch so SDK pin changes are still checked.
+cmake --preset windows-release "-DCMAKE_CXX_FLAGS=/DWIN32 /D_WINDOWS /EHsc /wd4458" -UFETCHCONTENT_FULLY_DISCONNECTED -DFETCHCONTENT_UPDATES_DISCONNECTED=ON || exit /b 2
 cmake --build --preset windows-release || exit /b 3
 echo BUILD-OK
 if "%~1"=="--no-test" exit /b 0

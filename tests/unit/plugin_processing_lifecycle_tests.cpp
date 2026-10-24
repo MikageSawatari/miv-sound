@@ -42,7 +42,7 @@
 #include <utility>
 #include <vector>
 
-#include "../support/crt_dialog_suppression.h"
+#include "../support/webview_test_lifetime.h"
 
 #if defined(_WIN32)
 #include <Windows.h>
@@ -432,7 +432,7 @@ public:
   processingResourcesLockable(EffeTuneProcessor &processor,
                               const std::chrono::milliseconds localTimeout) {
     auto acquired = false;
-    std::thread prober([&processor, &acquired, localTimeout] {
+    effetune::vst::testing::TestThread prober([&processor, &acquired, localTimeout] {
       const auto limit = std::chrono::steady_clock::now() + localTimeout * 10;
       do {
         std::unique_lock probe(processor.processingResourcesMutex_, std::try_to_lock);
@@ -915,7 +915,7 @@ void expect(const bool condition, const std::string &message) {
 class HeldControlGuard {
 public:
   explicit HeldControlGuard(EffeTuneProcessor &processor) {
-    owner_ = std::thread([this, &processor] {
+    owner_ = effetune::vst::testing::TestThread([this, &processor] {
       auto resources =
           PluginProcessorTestAccess::lockProcessingResources(processor);
       {
@@ -945,7 +945,7 @@ public:
 private:
   std::mutex mutex_;
   std::condition_variable changed_;
-  std::thread owner_;
+  effetune::vst::testing::TestThread owner_;
   bool held_ = false;
   bool released_ = false;
 };
@@ -1093,7 +1093,7 @@ void testAutomationCatalogProjectionIsOneControlTransaction() {
     PluginProcessorTestAccess::pauseAutomationCatalogBeforeProjection(
         *processor, true);
     std::optional<std::uint32_t> bound;
-    std::thread projector([&] {
+    effetune::vst::testing::TestThread projector([&] {
       if (bindTarget) {
         bound = PluginProcessorTestAccess::bindAutomationSlot(*processor,
                                                                identity);
@@ -1110,7 +1110,7 @@ void testAutomationCatalogProjectionIsOneControlTransaction() {
 
     std::string removalResponse;
     std::atomic_bool removalComplete{false};
-    std::thread remover([&] {
+    effetune::vst::testing::TestThread remover([&] {
       removalResponse = processor->handleUiMessage(
           R"({"type":"pipeline/rebuild","payload":{"pipeline":"A","plugins":[]}})"
       );
@@ -2509,7 +2509,7 @@ void testStateRestoreCancelsAnInFlightNodeEnableDescriptor() {
   expect(processor->process(data) == kResultOk,
          "render the disabling automation block");
 
-  std::thread drainer(
+  effetune::vst::testing::TestThread drainer(
       [&] { PluginProcessorTestAccess::drainAutomationValues(*processor); });
   const auto paused = pumpMainThreadUntil(
       [&] {
@@ -3134,27 +3134,42 @@ void testControlServiceEditsNeverCostAProcessedBlock() {
   // The command is built once: the Debug allocation guard is process-wide, so
   // this thread must not reach the heap while a block is in the engine.
   auto command = std::make_unique<effetune::vst::AudioCommand>();
-  std::thread control([&] {
-    auto observedEpoch = PluginProcessorTestAccess::blockEpoch(*processor);
-    std::uint32_t step = 0;
-    while (running.load(std::memory_order_acquire)) {
-      // A host runs the audio callback far more often than the 50 ms control
-      // service, so the service only runs once a block has gone by. That keeps
-      // the service off the idle path, where taking the engine over is free.
-      const auto epoch = PluginProcessorTestAccess::blockEpoch(*processor);
-      if (epoch == observedEpoch) {
-        std::this_thread::yield();
-        continue;
+  // Keep the upstream worker and loop free of jthread stop-state overhead.
+  // Construct its failure cleanup before starting it, outside the timed work.
+  std::thread control;
+  const effetune::vst::testing::TestCleanup stopAndJoin([&] {
+    running.store(false, std::memory_order_release);
+    if (control.joinable()) control.join();
+  });
+  control = std::thread([&] {
+    try {
+      auto observedEpoch = PluginProcessorTestAccess::blockEpoch(*processor);
+      std::uint32_t step = 0;
+      while (running.load(std::memory_order_acquire)) {
+        // A host runs the audio callback far more often than the 50 ms control
+        // service, so the service only runs once a block has gone by. That keeps
+        // the service off the idle path, where taking the engine over is free.
+        const auto epoch = PluginProcessorTestAccess::blockEpoch(*processor);
+        if (epoch == observedEpoch) {
+          std::this_thread::yield();
+          continue;
+        }
+        observedEpoch = epoch;
+        const auto offset = 0.25f + static_cast<float>(step++ % 8u) * 0.03125f;
+        if (!PluginProcessorTestAccess::publishParameterImage(
+                *processor, *command, 71u, 1104945464u, offset)) {
+          published.store(false, std::memory_order_release);
+          return;
+        }
+        PluginProcessorTestAccess::serviceLatencyUpdates(*processor);
+        serviceTicks.fetch_add(1, std::memory_order_acq_rel);
       }
-      observedEpoch = epoch;
-      const auto offset = 0.25f + static_cast<float>(step++ % 8u) * 0.03125f;
-      if (!PluginProcessorTestAccess::publishParameterImage(
-              *processor, *command, 71u, 1104945464u, offset)) {
-        published.store(false, std::memory_order_release);
-        return;
-      }
-      PluginProcessorTestAccess::serviceLatencyUpdates(*processor);
-      serviceTicks.fetch_add(1, std::memory_order_acq_rel);
+    } catch (const std::exception &error) {
+      std::cerr << "Test worker failed: " << error.what() << '\n';
+      effetune::vst::testing::webViewTestWorkerFailed.store(true);
+    } catch (...) {
+      std::cerr << "Test worker failed: unknown exception\n";
+      effetune::vst::testing::webViewTestWorkerFailed.store(true);
     }
   });
 
@@ -4318,7 +4333,7 @@ void testTelemetryPollLeavesTheAudioGuardAlone() {
     auto guard = PluginProcessorTestAccess::lockProcessingResources(*processor);
     std::atomic_bool completed{false};
     std::string response;
-    std::thread poll([&] {
+    effetune::vst::testing::TestThread poll([&] {
       response = processor->handleUiMessage(
           R"({"type":"telemetry/read","payload":{}})");
       completed.store(true, std::memory_order_release);
@@ -5082,9 +5097,9 @@ void testUiPacedControlServiceKeepsEveryBlockWet() {
   // Built once: the Debug allocation guard is process-wide, so this thread must
   // not reach the heap while a block is in the engine.
   auto command = std::make_unique<effetune::vst::AudioCommand>();
-  std::thread control([&] {
+  effetune::vst::testing::TestThread control([&](const std::stop_token stop) {
     std::uint32_t step = 0;
-    while (running.load(std::memory_order_acquire)) {
+    while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       const auto offset = 0.25f + static_cast<float>(step++ % 8u) * 0.03125f;
       if (!PluginProcessorTestAccess::publishParameterImage(
               *processor, *command, 73u, 1104945464u, offset)) {
@@ -5231,7 +5246,7 @@ void testAssetStatePollLeavesTheDspRunning() {
     auto guard = PluginProcessorTestAccess::lockProcessingResources(*processor);
     std::atomic_bool completed{false};
     std::string response;
-    std::thread poll([&] {
+    effetune::vst::testing::TestThread poll([&] {
       response = processor->handleUiMessage(
           R"({"type":"pipeline/assetState","payload":{"pluginId":91,"slot":0}})");
       completed.store(true, std::memory_order_release);
@@ -5315,7 +5330,7 @@ void testNotReadyPluginUpdateWaitsForTheInFlightBlock() {
   PluginProcessorTestAccess::beginSyntheticBlock(*processor);
   std::atomic_bool completed{false};
   std::atomic_bool accepted{false};
-  std::thread update([&] {
+  effetune::vst::testing::TestThread update([&] {
     const auto response = choc::json::parse(processor->handleUiMessage(
         R"({"type":"pipeline/updatePlugin","payload":{"pipeline":"A","plugin":)"
         R"({"id":77,"type":"DCOffsetPlugin","name":"DC Offset","enabled":true,)"
@@ -5573,8 +5588,8 @@ void testNamedAutomationEditSurvivesAConcurrentDrain() {
   std::mutex drainMutex;
   std::atomic_bool running{true};
   std::atomic_bool draining{true};
-  std::thread drain([&] {
-    while (running.load(std::memory_order_acquire)) {
+  effetune::vst::testing::TestThread drain([&](const std::stop_token stop) {
+    while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       {
         std::scoped_lock lock(drainMutex);
         if (draining.load(std::memory_order_acquire)) {
@@ -5724,9 +5739,9 @@ void testDelayBearingEditsDuringPlaybackKeepEveryBlockWet() {
   // Reuse the mailbox payload throughout the gesture.
   auto command = std::make_unique<effetune::vst::AudioCommand>();
   std::array<float, 6> packed{0.0f, 100.0f, 3.0f, 1.0f, 0.0f, -1.0f};
-  std::thread control([&] {
+  effetune::vst::testing::TestThread control([&](const std::stop_token stop) {
     std::uint32_t step = 0;
-    while (running.load(std::memory_order_acquire)) {
+    while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       // Lookahead is the delay-bearing parameter: every distinct value moves
       // the instance latency and therefore the compensation plan.
       packed[2] = 1.0f + static_cast<float>(step++ % 8u);
@@ -5844,7 +5859,7 @@ void testFailedDescriptorBackoffClaimsNothing() {
   // does neither can return here.
   PluginProcessorTestAccess::beginSyntheticBlock(*processor);
   std::atomic_bool completed{false};
-  std::thread service([&] {
+  effetune::vst::testing::TestThread service([&] {
     PluginProcessorTestAccess::serviceLatencyUpdates(*processor);
     completed.store(true, std::memory_order_release);
   });
@@ -6380,7 +6395,7 @@ void testConcurrentHostContextChangeWinsPluginUpdateAdmission() {
       *processor, true);
   std::string updateResponse;
   std::atomic_bool updateCompleted{false};
-  std::thread updater([&] {
+  effetune::vst::testing::TestThread updater([&] {
     updateResponse = processor->handleUiMessage(
         R"({"type":"pipeline/updatePlugin","payload":{"pipeline":"A","plugin":)"
         R"({"id":321,"type":"VolumePlugin","name":"Pair Send","enabled":true,)"
@@ -6496,7 +6511,7 @@ void testGateClosesInsideTheControlLock() {
   expect(std::abs(rig.outputLeft[0] - 1.25f) < 1.0e-6f,
          "the warm-up block is wet at the installed offset");
 
-  std::thread host;
+  effetune::vst::testing::TestThread host;
   std::atomic_bool started{false};
   std::atomic_bool completed{false};
   std::atomic_bool reconfigured{false};
@@ -6505,7 +6520,7 @@ void testGateClosesInsideTheControlLock() {
   std::uint32_t wetBlocks = 0;
   {
     const HeldControlGuard guard(*processor);
-    host = std::thread([&] {
+    host = effetune::vst::testing::TestThread([&] {
       started.store(true, std::memory_order_release);
       auto again = setup(48000.0, 64);
       reconfigured.store(processor->setupProcessing(again) == kResultOk,
@@ -6601,7 +6616,7 @@ void testTopologyEditsDuringPlaybackRaiseNoDiagnostic() {
     PluginProcessorTestAccess::beginSyntheticBlock(*processor);
     std::atomic_bool completed{false};
     std::atomic_bool routeAccepted{false};
-    std::thread edit([&] {
+    effetune::vst::testing::TestThread edit([&] {
       const auto response = choc::json::parse(processor->handleUiMessage(route));
       routeAccepted.store(response["ok"].getWithDefault<bool>(false),
                           std::memory_order_release);
@@ -6643,11 +6658,11 @@ void testTopologyEditsDuringPlaybackRaiseNoDiagnostic() {
   std::atomic_bool running{true};
   std::atomic_bool accepted{true};
   std::atomic<std::uint64_t> edits{0};
-  std::thread editor([&] {
+  effetune::vst::testing::TestThread editor([&](const std::stop_token stop) {
     const std::array<const char *, 3> routes{rebuildMessage, addNodeMessage,
                                              restoreMessage};
     std::size_t step = 0;
-    while (running.load(std::memory_order_acquire)) {
+    while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       const auto response = choc::json::parse(
           processor->handleUiMessage(routes[step++ % routes.size()]));
       if (!response["ok"].getWithDefault<bool>(false)) {
@@ -6793,7 +6808,7 @@ void testPendingWorkIsServicedWhenTheAudioCallbackQuiesces() {
   // that did would wait the held block out instead of returning.
   PluginProcessorTestAccess::beginSyntheticBlock(*processor);
   std::atomic_bool completed{false};
-  std::thread service([&] {
+  effetune::vst::testing::TestThread service([&] {
     PluginProcessorTestAccess::serviceLatencyUpdates(*processor);
     PluginProcessorTestAccess::serviceLatencyUpdates(*processor);
     completed.store(true, std::memory_order_release);
@@ -6861,9 +6876,9 @@ void testDelayBearingEditsWithAStoppedTransportKeepEveryBlockWet() {
   // Reuse the mailbox payload throughout the gesture.
   auto command = std::make_unique<effetune::vst::AudioCommand>();
   std::array<float, 6> packed{0.0f, 100.0f, 3.0f, 1.0f, 0.0f, -1.0f};
-  std::thread control([&] {
+  effetune::vst::testing::TestThread control([&](const std::stop_token stop) {
     std::uint32_t step = 0;
-    while (running.load(std::memory_order_acquire)) {
+    while (!stop.stop_requested() && running.load(std::memory_order_acquire)) {
       // Lookahead is the delay-bearing parameter: every distinct value moves
       // the instance latency and therefore the compensation plan.
       packed[2] = 1.0f + static_cast<float>(step++ % 8u);
@@ -7329,7 +7344,7 @@ void testSfzReplacementKeepsWetProcessing() {
       entered.store(true, std::memory_order_release);
       while (!release.load(std::memory_order_acquire)) std::this_thread::yield();
     });
-    std::jthread control([&] { result = commit(revision); done.store(true, std::memory_order_release); });
+    effetune::vst::testing::TestThread control([&] { result = commit(revision); done.store(true, std::memory_order_release); });
     struct ReleaseOnExit {
       std::atomic_bool &flag;
       ~ReleaseOnExit() { flag.store(true, std::memory_order_release); }
@@ -10637,7 +10652,7 @@ void testStaleBulkRequestsCannotCrossStateReplacement() {
 
   PluginProcessorTestAccess::pauseNextBulkRequestBeforeCommit(*processor);
   std::string staleRebuildResponse;
-  std::thread staleRebuilder([&] {
+  effetune::vst::testing::TestThread staleRebuilder([&] {
     staleRebuildResponse = processor->handleUiMessage(
         R"({"type":"pipeline/rebuild","payload":{"pipeline":"A","plugins":[)"
         R"({"id":802,"type":"DCOffsetPlugin","name":"Stale Rebuild",)"
@@ -10657,7 +10672,7 @@ void testStaleBulkRequestsCannotCrossStateReplacement() {
 
   PluginProcessorTestAccess::pauseNextBulkRequestBeforeCommit(*processor);
   std::string staleHistoryResponse;
-  std::thread staleHistory([&] {
+  effetune::vst::testing::TestThread staleHistory([&] {
     staleHistoryResponse = processor->handleUiMessage(
         R"({"type":"pipeline/restoreHistory","payload":{"pipelineA":[)"
         R"({"id":803,"type":"DCOffsetPlugin","name":"Stale History",)"
@@ -10686,7 +10701,7 @@ void testStaleBulkRequestsCannotCrossStateReplacement() {
   announceReplacementPage();
   PluginProcessorTestAccess::pauseNextBulkRequestBeforeCommit(*processor);
   std::string pendingHistoryResponse;
-  std::thread pendingHistory([&] {
+  effetune::vst::testing::TestThread pendingHistory([&] {
     pendingHistoryResponse = processor->handleUiMessage(
         R"({"type":"pipeline/restoreHistory","payload":{"pipelineA":[)"
         R"({"id":804,"type":"DCOffsetPlugin","name":"Pending History",)"
@@ -10776,7 +10791,7 @@ void testStalePluginUpdateCannotOverwritePendingStateReplacement() {
       *processor, true);
   std::string staleResponse;
   std::atomic_bool staleUpdateCompleted{false};
-  std::thread staleUpdater([&] {
+  effetune::vst::testing::TestThread staleUpdater([&] {
     staleResponse = processor->handleUiMessage(
         R"({"type":"pipeline/updatePlugin","payload":{"pipeline":"A",)"
         R"("plugin":{"id":109,"type":"DCOffsetPlugin","name":"DC Offset",)"
@@ -10890,7 +10905,7 @@ void testStalePluginUpdateCannotOverwritePendingStateReplacement() {
       *processor, true);
   std::string crossedEpochResponse;
   std::atomic_bool crossedEpochUpdateCompleted{false};
-  std::thread crossedEpochUpdater([&] {
+  effetune::vst::testing::TestThread crossedEpochUpdater([&] {
     crossedEpochResponse = processor->handleUiMessage(
         R"({"type":"pipeline/updatePlugin","payload":{"pipeline":"A",)"
         R"("plugin":{"id":109,"type":"DCOffsetPlugin","name":"DC Offset",)"
@@ -11168,7 +11183,7 @@ void testSetParamNormalizedAloneReachesTheSavedState() {
       PluginProcessorTestAccess::lockProcessingResources(*processor);
   std::atomic_bool committerStarted{false};
   std::atomic_bool committerCompleted{false};
-  std::thread committer([&] {
+  effetune::vst::testing::TestThread committer([&] {
     committerStarted.store(true, std::memory_order_release);
     PluginProcessorTestAccess::commitPendingControllerWritesIfAudioIdle(
         *processor);
@@ -11233,7 +11248,7 @@ void testSetParamNormalizedAloneReachesTheSavedState() {
       *processor, *slot, identity, kRacedFallback);
   PluginProcessorTestAccess::pauseControllerCommitBeforePublish(*processor, true);
   std::atomic_bool handoffCommitterCompleted{false};
-  std::thread handoffCommitter([&] {
+  effetune::vst::testing::TestThread handoffCommitter([&] {
     PluginProcessorTestAccess::commitPendingControllerWritesIfAudioIdle(
         *processor);
     handoffCommitterCompleted.store(true, std::memory_order_release);
@@ -11820,122 +11835,234 @@ void testSfzEventDetectionRefreshesHostLatency() {
 
 } // namespace
 
-int main() {
+int runTestBody() {
   effetune::vst::testing::suppressCrtModalDialogs();
   try {
 #if defined(EFFETUNE_AUTOMATION_HOST_GATE_FIXTURE)
+    effetune::vst::testing::checkWebViewTestDeadline();
     testHostGateFixturePublishesThreeParameters();
 #endif
+    effetune::vst::testing::checkWebViewTestDeadline();
     testProcessingSurvivesHostReconfiguration();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testHostProjectTransportSnapshot();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSfzEventDetectionRefreshesHostLatency();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testContextualExecutionAdmissionSurvivesEngineContextChanges();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testConcurrentHostContextChangeWinsPluginUpdateAdmission();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testOversamplingFailureRestoresPreviousPlayableGeneration();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStoppedTransportFallbackAndDiscontinuities();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAutomationCatalogProjectionIsOneControlTransaction();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testVariableHostBlocksAndOversampledLatency();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testFrequencyPreviewReachesPipelineAndStopsWithEditor();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testPreviewMeasurementGateCoversInterpolationTail();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testClosedEditorHostAutomationUpdatesStateAndAudio();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testBoundTargetGestureReachesAudioWithoutHostEcho();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testNamedBulkAutomationEditsReachAudioAndUnnamedOnesStayOverlaid();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testProcessorPublishesAutomationStateInterface();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testNodeEnableAutomationDrivesTopologyNotPackedParameters();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testBoundNodeEnableEditsDoNotInvalidateHostParameters();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStateRestoreCancelsAnInFlightNodeEnableDescriptor();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAutomationWriteGateControlsOnDemandBinding();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testBundledGesturesReachTheHostInCollectedOrder();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testBundledGestureBindsOnDemandUnderTheWriteGate();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testWithheldBindingNeverClaimsAnAutomationLane();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testReconfigurationPreservesUndrainedAutomationCurrent();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testInactivePipelineAutomationLeavesTheActiveRuntimeImageAlone();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testControlOwnedRuntimeImageKeepsProcessedAudio();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testControlServiceEditsNeverCostAProcessedBlock();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testBypassAtomicTracksSuccessfulBlockEndpoint();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testMasterBypassGestureReachesAudioWithoutHostEcho();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testFailedTransactionRetriesLatestAutomationAndNotifiesOnce();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStateRestoreForceSurvivesUiRebuildBeforeAudioResume();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAudioIdleHorizonCoversSlowHostBlocks();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testPendingFullImageSurvivesReconfiguration();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStoppedParameterImageIsServicedWithoutAudioPolling();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testFullImageRefreshesLatencyOnceButAutomationDoesNot();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testDeferredLatencyPlanRefreshAlignsParallelAndBypassPaths();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTopologyDescriptorIsServicedOutsideAudioCallback();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAutomationSliceBlockDoesNotAllocate();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTelemetryPollLeavesTheAudioGuardAlone();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testPendingTopologyKeepsProcessedAudio();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testPendingPlanConsumesNewUiGenerationAndTopologyRemoval();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testNativeControlServiceHandlesAssetReadyAndClear();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testGroupDelayAssetPublishesCurrentUiLatency();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testHeldControlGuardKeepsProcessedTimelineWithLatency();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testUiPacedControlServiceKeepsEveryBlockWet();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testOwnedRuntimeImageKeepsItsDirtyFlagsThroughAFailedBlock();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAssetStatePollLeavesTheDspRunning();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testNotReadyPluginUpdateWaitsForTheInFlightBlock();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testOwnedAudioTimelineLeavesTheBlockUntouched();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testNamedAutomationEditSurvivesAnUndrainedPublish();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testNamedAutomationEditSurvivesAConcurrentDrain();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testRefusedPluginUpdateLeavesTheStateDocumentUnchanged();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testDelayBearingEditsDuringPlaybackKeepEveryBlockWet();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testFailedDescriptorBackoffClaimsNothing();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testFlushOnlyBlocksLetTheControlServiceReachTheDsp();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testFailedPluginRebuildKeepsProcessing();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testFailedBulkRebuildsPreserveTheWholePlayableGeneration();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testGateClosesInsideTheControlLock();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTopologyEditsDuringPlaybackRaiseNoDiagnostic();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testPendingWorkIsServicedWhenTheAudioCallbackQuiesces();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testDelayBearingEditsWithAStoppedTransportKeepEveryBlockWet();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testBackupChooserReentrantCancellation();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testVisualizerCapturesFinalHostOutput();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSpectrumOverlayBridgeLifecycle();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTubeCircuitFaultBridgeLifecycle();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAdaptivePredictionFaultBridgeLifecycle();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSfzAndIrTransferAdmissionBudgets();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSfzChooserReentrantCancellation();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSfzReferencesSurviveAbAndState();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSfzReplacementKeepsWetProcessing();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testOscilloscopeSweepsSurviveProcessorReactivation();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testDeferredBassManagementHostAndBypassLatency();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testLiveLatencyCommitAlignsWetBypassAndHost();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testRefreshFailuresStayOffTheAudioDiagnosticBurst();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testHostRefusedGestureStillAdoptsTheUserValue();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testOpenTouchOutranksHostAutomationInput();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAReleasedTouchHandsTheSlotBackOnTheNextBlock();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTheEditorFacingWriteFollowsTheHostOnceTheHandIsOff();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testOneTouchReportsOneBeginEveryValueAndOneEnd();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testADragReportsEveryValueInOrderAndNothingElse();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testEveryDragValueReachesTheHostInTheCallThatMadeIt();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTheShortestDragIsATouchWithOneValueInIt();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTheOpeningValueWaitsForOneBlockAndTheDragThenFlows();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAGestureClosedBeforeAnyBlockStillReportsItsValue();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testEveryValueBeforeTheBoundaryCollapsesIntoTheLatest();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testNoClockReleasesTheValueWaitingOnABlock();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testProcessCallsNoComponentHandlerMethodWhileAValueIsHeld();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTheControlServiceCarriesAHeldValueOnlyAfterTheBoundary();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testALiveDragNeverRoutesThroughTheControlService();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testTheHeldValueBelongsToTheParameterThatOpenedIt();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAnOpenTouchSuppressesOnlyItsOwnParameter();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testADragReportsNoValueTheUserNeverMade();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testNoLeakedTouch();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStateRestoreEndsAnOpenTouch();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStateRestoreClosesATouchReopenedBeforeTheReload();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testClickActivatedControlOpensItsTouchBeforeItsValue();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testRepeatedBeginKeepsOneTouchAndReopensAfterANativeClose();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSlotRetirementEndsTheTouchOutsideTheResourceLock();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testRefusedMasterBypassStillBypassesTheDsp();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAutomationEditWithoutGestureFieldsStaysAOneShot();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testLinkedMultiParameterBatchIsOneHostGroupEdit();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testBoundSlotsRenderDenormalizedDisplayStrings();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testDisplayStringsCarryTheStepsOwnDecimalCount();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSteppedIntegerAutomationMatchesStateTextAndAudio();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testInvalidStatePipelineNeverReplacesTheAuthority();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStructuredParameterShapeChangeRebuildsTheRuntime();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStaleBulkRequestsCannotCrossStateReplacement();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStalePluginUpdateCannotOverwritePendingStateReplacement();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSetParamNormalizedAloneReachesTheSavedState();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testStoppedControllerNodeEnableWritesReachTheActiveTopology();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testSetParamNormalizedLeavesBypassAndUnboundSlotsAlone();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAutomationTraceFollowsItsEnvironmentVariable();
     std::cout << "EffeTune VST processing lifecycle tests passed\n";
     return 0;
@@ -11943,4 +12070,8 @@ int main() {
     std::cerr << "Test failure: " << exception.what() << '\n';
     return 1;
   }
+}
+
+int main() {
+  return effetune::vst::testing::runWebViewTest([] { return runTestBody(); });
 }

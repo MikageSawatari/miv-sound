@@ -14,7 +14,7 @@
 #include <string>
 #include <thread>
 
-#include "../support/crt_dialog_suppression.h"
+#include "../support/webview_test_lifetime.h"
 
 namespace {
 
@@ -173,6 +173,7 @@ private:
 
 void testViewScaling(const char *pluginPath) {
   LoadedPlugin plugin(pluginPath);
+  TestPlugFrame frame;
   TestWindow parent;
 
   IEditController *controller = nullptr;
@@ -181,16 +182,28 @@ void testViewScaling(const char *pluginPath) {
              reinterpret_cast<void **>(&controller)) == kResultOk &&
              controller != nullptr,
          "create the edit controller");
+  bool initialized = false;
+  effetune::vst::testing::TestCleanup releaseController([&] {
+    if (initialized) (void)controller->terminate();
+    controller->release();
+  });
   expect(controller->initialize(nullptr) == kResultOk, "initialize the edit controller");
+  initialized = true;
 
   auto *view = controller->createView(ViewType::kEditor);
   expect(view != nullptr, "create the plug-in view");
+  effetune::vst::testing::TestCleanup releaseView([&] {
+    (void)view->setFrame(nullptr);
+    (void)view->removed();
+    view->release();
+  });
 
   IPlugViewContentScaleSupport *scaleSupport = nullptr;
   expect(view->queryInterface(IPlugViewContentScaleSupport::iid,
                               reinterpret_cast<void **>(&scaleSupport)) == kResultTrue &&
              scaleSupport != nullptr,
          "query IPlugViewContentScaleSupport");
+  effetune::vst::testing::TestCleanup releaseScale([&] { scaleSupport->release(); });
 
   expect(scaleSupport->setContentScaleFactor(1.5f) == kResultTrue,
          "apply 150% scale before the frame is set");
@@ -205,7 +218,6 @@ void testViewScaling(const char *pluginPath) {
              size.getHeight() == 760,
          "100% initial physical size");
 
-  TestPlugFrame frame;
   expect(view->setFrame(&frame) == kResultTrue, "set the plug-in frame");
   expect(scaleSupport->setContentScaleFactor(1.5f) == kResultTrue &&
              frame.resizeCalls == 0,
@@ -260,21 +272,22 @@ void testViewScaling(const char *pluginPath) {
   expect(view->removed() == kResultTrue,
          "remove the plug-in view a second time");
   pumpMessages(std::chrono::milliseconds(500));
-  scaleSupport->release();
-  view->release();
+  releaseScale.run();
+  releaseView.run();
   expect(controller->terminate() == kResultOk, "terminate the edit controller");
-  controller->release();
+  initialized = false;
   pumpMessages(std::chrono::milliseconds(500));
 }
 
 } // namespace
 
-int main(const int argc, char **argv) {
+int runTestBody(const int argc, char **argv) {
   effetune::vst::testing::suppressCrtModalDialogs();
   const auto errorMode = SetErrorMode(0);
   SetErrorMode(errorMode | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
   try {
     expect(argc == 2, "expected the VST3 module path");
+    effetune::vst::testing::checkWebViewTestDeadline();
     testViewScaling(argv[1]);
     std::cout << "EffeTune VST view scaling tests passed\n";
     return 0;
@@ -282,4 +295,8 @@ int main(const int argc, char **argv) {
     std::cerr << "Test failure: " << exception.what() << '\n';
     return 1;
   }
+}
+
+int main(const int argc, char **argv) {
+  return effetune::vst::testing::runWebViewTest([&] { return runTestBody(argc, argv); });
 }

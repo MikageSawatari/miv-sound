@@ -551,6 +551,7 @@ private:
   AutomationBindingRegistry automationBindings_;
   AutomationParameterBank automationParameters_;
   AutomationScheduler automationScheduler_;
+  const char *dataDirectoryError_ = nullptr;
   PresetStore presetStore_;
   ConfigStore configStore_;
   SfzLibrary sfzLibrary_{configStore_.path().empty() ? std::filesystem::path{}

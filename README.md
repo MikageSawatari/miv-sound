@@ -9,15 +9,20 @@ to mImageViewer.
 This version has its own product name, VST3 class IDs and musical-note icons.
 Settings, presets, SFZ references and WebView2 data live under the absolute
 `MIV_SOUND_DATA_DIR` supplied by mImageViewer (`plugin/` and `webview/`). A missing,
-empty or relative value fails initialization. Preset extensions and the state
+empty or relative value fails initialization. On Windows, a non-empty
+`WEBVIEW2_USER_DATA_FOLDER` also fails initialization because it overrides
+WebView2's explicit storage path. Preset extensions and the state
 format remain compatible. Counter is hidden from the add menu and system presets;
 imported counters receive no position until a media clock is implemented.
 Copyright notices and upstream MIT licenses are preserved.
 
 On Windows, initialize the submodules, install VS 2026 BuildTools, CMake 4.3 and
 Node 22, then run `build-miv.bat` (`build-miv.bat --no-test` skips CTest).
-The script uses the bundled Ninja, reuses an already downloaded VST3 SDK without
-network access, and returns 2/3/4 for configure/build/test failures (1 for setup).
+The script uses the bundled Ninja and `FETCHCONTENT_UPDATES_DISCONNECTED=ON`:
+repeat configuration uses the cached VST3 SDK while still checking pin changes.
+An unfetched pin fails configuration instead of using the old SDK; acquire it
+with `FETCHCONTENT_UPDATES_DISCONNECTED=OFF` before rebuilding.
+The script returns 2/3/4 for configure/build/test failures (1 for setup).
 Output: `build/windows-release/VST3/Release/mIV Sound.vst3`.
 CTest supplies separate disposable `MIV_SOUND_DATA_DIR` paths for tests.
 

@@ -12,7 +12,7 @@
 #include <string_view>
 #include <vector>
 
-#include "../support/crt_dialog_suppression.h"
+#include "../support/webview_test_lifetime.h"
 
 namespace {
 using namespace Steinberg;
@@ -241,11 +241,14 @@ void testAtomicTransportValidation() {
 }
 } // namespace
 
-int main() {
+int runTestBody() {
   effetune::vst::testing::suppressCrtModalDialogs();
   try {
+    effetune::vst::testing::checkWebViewTestDeadline();
     testInterfacesAndOrdinaryHost();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testReplacementOwnershipAndPolling();
+    effetune::vst::testing::checkWebViewTestDeadline();
     testAtomicTransportValidation();
     std::cout << "EffeTune Now Playing metadata tests passed\n";
     return 0;
@@ -253,4 +256,8 @@ int main() {
     std::cerr << "Test failure: " << error.what() << '\n';
     return 1;
   }
+}
+
+int main() {
+  return effetune::vst::testing::runWebViewTest([] { return runTestBody(); });
 }

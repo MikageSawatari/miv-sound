@@ -33,6 +33,26 @@ replaceOnce('        std::function<void(choc::ui::WebView&)> webviewIsReady;',
 replaceOnce('if (auto userDataFolder = getUserDataFolder(); ! userDataFolder.empty())',
   'if (auto userDataFolder = options.userDataFolder.empty() ? getUserDataFolder() : options.userDataFolder; ! userDataFolder.empty())');
 
+// This is the Windows Pimpl only. WebViewHost marshals destruction to its
+// owner STA; Close must run there before releasing the controller/COM objects.
+replaceOnce(`        deletionChecker->deleted = true;
+
+        eventHandler.reset();
+        coreWebView.reset();
+        coreWebViewController.reset();
+        coreWebViewEnvironment.reset();
+        hwnd.reset();`,
+  `        deletionChecker->deleted = true;
+
+        if (coreWebViewController)
+            coreWebViewController->Close();
+
+        eventHandler.reset();
+        coreWebView.reset();
+        coreWebViewController.reset();
+        coreWebViewEnvironment.reset();
+        hwnd.reset();`);
+
 replaceOnce(`                        createCoreWebView2EnvironmentWithOptions (nullptr, userDataFolder.c_str(), nullptr, eventHandler);
                         return true;`,
   `                        const auto result = createCoreWebView2EnvironmentWithOptions (nullptr, userDataFolder.c_str(), nullptr, eventHandler);
@@ -99,7 +119,13 @@ replaceOnce(`        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Con
   `        HRESULT STDMETHODCALLTYPE Invoke (HRESULT result, ICoreWebView2Controller* controller) override
         {
             if (deletionCheckerRef->deleted)
+            {
+                // WebView2 completes on the creating STA. The owner no longer
+                // exists, so close this late controller without touching it.
+                if (controller != nullptr)
+                    controller->Close();
                 return E_FAIL;
+            }
 
             if (FAILED (result) || controller == nullptr)
             {

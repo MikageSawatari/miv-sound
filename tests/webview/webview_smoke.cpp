@@ -26,18 +26,15 @@
 #include <utility>
 #include <vector>
 
-#include "../support/crt_dialog_suppression.h"
+#include "../support/webview_test_lifetime.h"
 
 namespace {
 
 // Keep completion budgets above ten times local timings; polling and deliberate
 // observation periods do not need to grow with these CI safety margins.
 constexpr auto kCompletionTimeout = std::chrono::seconds(60);
-constexpr auto kProcessExitTimeout = std::chrono::seconds(120);
 constexpr DWORD kCompletionTimeoutMs = static_cast<DWORD>(
     std::chrono::duration_cast<std::chrono::milliseconds>(kCompletionTimeout).count());
-constexpr DWORD kProcessExitTimeoutMs = static_cast<DWORD>(
-    std::chrono::duration_cast<std::chrono::milliseconds>(kProcessExitTimeout).count());
 
 class ScopedWebViewProfile {
 public:
@@ -87,11 +84,17 @@ public:
       return;
     }
     configured_ = true;
+    effetune::vst::testing::rememberWebViewTestDirectory(path_);
   }
 
   ~ScopedWebViewProfile() {
     if (!cleanupAttempted_) {
-      (void)cleanup();
+      try {
+        if (!cleanup()) effetune::vst::testing::webViewCleanupFailed = true;
+      } catch (const std::exception &error) {
+        std::cerr << "WebView profile cleanup failed: " << error.what() << '\n';
+        effetune::vst::testing::webViewCleanupFailed = true;
+      }
     }
   }
 
@@ -101,58 +104,12 @@ public:
   [[nodiscard]] bool configured() const noexcept { return configured_; }
   [[nodiscard]] const std::filesystem::path &path() const noexcept { return path_; }
 
-  void captureChildProcesses() {
-    bool scanSucceeded = false;
-    const auto descendants = currentDescendants(scanSucceeded);
-    if (!scanSucceeded) {
-      processScanFailed_ = true;
-      return;
-    }
-    for (const auto processId : descendants) {
-      if (capturedProcessIds_.contains(processId)) {
-        continue;
-      }
-      const auto process = OpenProcess(SYNCHRONIZE, FALSE, processId);
-      if (process != nullptr) {
-        capturedProcessIds_.insert(processId);
-        childProcesses_.push_back(process);
-      }
-    }
-  }
-
   [[nodiscard]] bool cleanup() {
     cleanupAttempted_ = true;
     restoreEnvironment();
-    captureChildProcesses();
-
-    const auto deadline = std::chrono::steady_clock::now() +
-                          kProcessExitTimeout;
-    bool childrenExited = false;
-    while (std::chrono::steady_clock::now() < deadline) {
-      captureChildProcesses();
-      childrenExited = true;
-      for (const auto process : childProcesses_) {
-        if (WaitForSingleObject(process, 0) == WAIT_TIMEOUT) {
-          childrenExited = false;
-          break;
-        }
-      }
-      bool scanSucceeded = false;
-      const auto descendants = currentDescendants(scanSucceeded);
-      if (childrenExited && scanSucceeded && descendants.empty()) {
-        break;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds(50));
-    }
-    for (const auto process : childProcesses_) {
-      CloseHandle(process);
-    }
-    childProcesses_.clear();
-
-    bool finalScanSucceeded = false;
-    const auto finalDescendants = currentDescendants(finalScanSucceeded);
-    if (processScanFailed_ || !childrenExited || !finalScanSucceeded ||
-        !finalDescendants.empty()) {
+    if (path_.empty()) return true;
+    if (!effetune::vst::testing::waitForWebViewExit(path_)) {
+      effetune::vst::testing::webViewCleanupFailed = true;
       return false;
     }
     std::error_code error;
@@ -161,53 +118,6 @@ public:
   }
 
 private:
-  [[nodiscard]] static std::unordered_set<DWORD>
-  currentDescendants(bool &scanSucceeded) {
-    std::unordered_set<DWORD> descendants;
-    const auto snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snapshot == INVALID_HANDLE_VALUE) {
-      return descendants;
-    }
-
-    struct ProcessEntry {
-      DWORD id = 0;
-      DWORD parentId = 0;
-      std::wstring executable;
-    };
-    std::vector<ProcessEntry> processes;
-    PROCESSENTRY32W entry{};
-    entry.dwSize = sizeof(entry);
-    if (Process32FirstW(snapshot, &entry) == FALSE) {
-      CloseHandle(snapshot);
-      return descendants;
-    }
-    do {
-      processes.push_back({entry.th32ProcessID, entry.th32ParentProcessID,
-                           entry.szExeFile});
-    } while (Process32NextW(snapshot, &entry) != FALSE);
-    CloseHandle(snapshot);
-    scanSucceeded = true;
-
-    std::unordered_set<DWORD> ancestry{GetCurrentProcessId()};
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      for (const auto &process : processes) {
-        if (ancestry.contains(process.parentId) &&
-            ancestry.insert(process.id).second) {
-          changed = true;
-        }
-      }
-    }
-    for (const auto &process : processes) {
-      if (process.id != GetCurrentProcessId() && ancestry.contains(process.id) &&
-          _wcsicmp(process.executable.c_str(), L"msedgewebview2.exe") == 0) {
-        descendants.insert(process.id);
-      }
-    }
-    return descendants;
-  }
-
   void restoreEnvironment() noexcept {
     if (!configured_) {
       return;
@@ -220,12 +130,9 @@ private:
 
   std::filesystem::path path_;
   std::wstring previousValue_;
-  std::unordered_set<DWORD> capturedProcessIds_;
-  std::vector<HANDLE> childProcesses_;
   bool hadPreviousValue_ = false;
   bool configured_ = false;
   bool cleanupAttempted_ = false;
-  bool processScanFailed_ = false;
 };
 
 struct ParentWindowContention {
@@ -273,7 +180,7 @@ LRESULT CALLBACK parentWindowProcedure(HWND window, const UINT message,
   std::mutex hostMutex;
   std::shared_ptr<effetune::vst::WebViewHost> host;
   std::atomic_bool constructed{false};
-  std::thread owner([&] {
+  effetune::vst::testing::TestThread owner([&] {
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
       SetEvent(published);
       return;
@@ -331,36 +238,10 @@ LRESULT CALLBACK parentWindowProcedure(HWND window, const UINT message,
              : 1;
 }
 
+// The probe already bounds both waits and resumes/joins its owner STA on
+// failure. Run it in-process: a process watchdog must not bypass owner teardown.
 [[nodiscard]] bool runNonPumpingOwnerWatchdog() {
-  std::wstring executable(32768, L'\0');
-  const auto length = GetModuleFileNameW(
-      nullptr, executable.data(), static_cast<DWORD>(executable.size()));
-  if (length == 0 || length >= executable.size()) {
-    return false;
-  }
-  executable.resize(length);
-  auto commandLine = L"\"" + executable +
-                     L"\" --non-pumping-owner-child";
-  STARTUPINFOW startup{};
-  startup.cb = sizeof(startup);
-  PROCESS_INFORMATION process{};
-  if (CreateProcessW(nullptr, commandLine.data(), nullptr, nullptr, FALSE,
-                     CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process) ==
-      FALSE) {
-    return false;
-  }
-  const auto wait = WaitForSingleObject(process.hProcess, kProcessExitTimeoutMs);
-  if (wait != WAIT_OBJECT_0) {
-    (void)TerminateProcess(process.hProcess, 1);
-    (void)WaitForSingleObject(process.hProcess, kProcessExitTimeoutMs);
-  }
-  DWORD exitCode = 1;
-  const auto exited = wait == WAIT_OBJECT_0 &&
-                      GetExitCodeProcess(process.hProcess, &exitCode) != FALSE &&
-                      exitCode == 0;
-  CloseHandle(process.hThread);
-  CloseHandle(process.hProcess);
-  return exited;
+  return runNonPumpingOwnerChild() == 0;
 }
 
 [[nodiscard]] bool writeSfzSmokeSample(const std::filesystem::path &path,
@@ -702,7 +583,7 @@ struct SmokeState {
       if (!webView.evaluate(script, [&](std::string failure, std::string value) {
             evaluationError = std::move(failure); result = std::move(value); complete.store(true);
           })) return false;
-      const auto deadline = std::chrono::steady_clock::now() + kCompletionTimeout;
+      const auto deadline = effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
       while (!complete.load() && std::chrono::steady_clock::now() < deadline) {
         pumpMessages(); std::this_thread::sleep_for(std::chrono::milliseconds(5));
       }
@@ -710,7 +591,7 @@ struct SmokeState {
     };
     std::string result;
     choc::value::Value snapshot;
-    const auto deadline = std::chrono::steady_clock::now() + kCompletionTimeout;
+    const auto deadline = effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
     while (attached && std::chrono::steady_clock::now() < deadline) {
       pumpMessages();
       if (evaluate(
@@ -759,7 +640,7 @@ struct SmokeState {
 
 } // namespace
 
-int main(const int argc, char **argv) {
+int runTestBody(const int argc, char **argv) {
   effetune::vst::testing::suppressCrtModalDialogs();
   const auto errorMode = SetErrorMode(0);
   SetErrorMode(errorMode | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
@@ -802,7 +683,6 @@ int main(const int argc, char **argv) {
       startupParent, std::filesystem::absolute(startupOnly ? argv[3] : EFFETUNE_WEBVIEW_ASSET_DIR),
       webViewProfile.path());
   if (startupParent != nullptr) DestroyWindow(startupParent);
-  webViewProfile.captureChildProcesses();
   if (startupOnly || !startupPassed) {
     UnregisterClassW(className, instance);
     const bool cleaned = webViewProfile.cleanup();
@@ -822,7 +702,7 @@ int main(const int argc, char **argv) {
     std::shared_ptr<effetune::vst::WebViewHost> processorWebView;
     std::atomic_bool attachReturned{true};
     std::atomic_uint32_t bridgeCalls{0};
-    std::thread editorLease([&] {
+    effetune::vst::testing::TestThread editorLease([&] {
       if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
         SetEvent(leasePublished);
         return;
@@ -903,7 +783,7 @@ int main(const int argc, char **argv) {
     std::shared_ptr<effetune::vst::WebViewHost> splitHost;
     int splitOwner = 0;
     std::atomic_bool splitAttached{false};
-    std::thread creator([&] {
+    effetune::vst::testing::TestThread creator([&] {
       if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
         SetEvent(created);
         return;
@@ -932,7 +812,7 @@ int main(const int argc, char **argv) {
       mainSplitHost = splitHost;
       splitHost.reset();
     }
-    std::thread editor([&] {
+    effetune::vst::testing::TestThread editor([&] {
       if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
         SetEvent(attached);
         return;
@@ -1106,7 +986,7 @@ int main(const int argc, char **argv) {
           webView.isAttachedTo(activeEditorOwner) &&
           !webView.isAttachedTo(&secondEditorOwner) && editorOwnershipRespected;
       ShowWindow(parent, SW_SHOWNOACTIVATE);
-      const auto deadline = std::chrono::steady_clock::now() + kCompletionTimeout;
+      const auto deadline = effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
       auto nextEvaluation = std::chrono::steady_clock::now() + std::chrono::seconds(1);
       while ((!uiReady.load(std::memory_order_acquire) ||
               smokeState.hostInfoCalls.load(std::memory_order_relaxed) == 0) &&
@@ -1159,7 +1039,7 @@ int main(const int argc, char **argv) {
             })) {
           return false;
         }
-        const auto evaluateDeadline = std::chrono::steady_clock::now() + kCompletionTimeout;
+        const auto evaluateDeadline = effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
         while (!complete.load(std::memory_order_acquire) &&
                std::chrono::steady_clock::now() < evaluateDeadline) {
           pumpMessages();
@@ -2079,7 +1959,7 @@ int main(const int argc, char **argv) {
             "return false; help.click(); return !menu.classList.contains('show'); })()",
             ignored) && ignored == "true";
         const auto appHelpDeadline =
-            std::chrono::steady_clock::now() + kCompletionTimeout;
+            effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
         while (appHelpStarted && smokeState.externalAppHelpCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < appHelpDeadline) {
           pumpMessages();
@@ -2097,7 +1977,7 @@ int main(const int argc, char **argv) {
             "return false; github.click(); return !menu.classList.contains('show'); })()",
             ignored) && ignored == "true";
         const auto githubDeadline =
-            std::chrono::steady_clock::now() + kCompletionTimeout;
+            effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
         while (githubStarted && smokeState.externalGitHubCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < githubDeadline) {
           pumpMessages();
@@ -2114,7 +1994,7 @@ int main(const int argc, char **argv) {
             "if (!help) return false; help.click(); return true; })()",
             ignored) && ignored == "true";
         const auto externalHelpDeadline =
-            std::chrono::steady_clock::now() + kCompletionTimeout;
+            effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
         while (externalHelpStarted && smokeState.externalHelpCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < externalHelpDeadline) {
           pumpMessages();
@@ -2126,7 +2006,7 @@ int main(const int argc, char **argv) {
             "analyzer.md#level-meter'); true",
             ignored) && ignored == "true";
         const auto remappedExternalHelpDeadline =
-            std::chrono::steady_clock::now() + kCompletionTimeout;
+            effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
         while (remappedExternalHelpStarted && smokeState.remappedExternalHelpCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < remappedExternalHelpDeadline) {
           pumpMessages();
@@ -2142,7 +2022,7 @@ int main(const int argc, char **argv) {
             "return true; })()",
             ignored) && ignored == "true";
         const auto externalAiDeadline =
-            std::chrono::steady_clock::now() + kCompletionTimeout;
+            effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
         while (externalAiStarted && smokeState.externalAiCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < externalAiDeadline) {
           pumpMessages();
@@ -2180,7 +2060,7 @@ int main(const int argc, char **argv) {
             "(() => { const button = document.querySelector('.toggle-button.master-toggle'); "
             "button?.click(); return !!button; })()",
             ignored);
-        const auto bypassDeadline = std::chrono::steady_clock::now() + kCompletionTimeout;
+        const auto bypassDeadline = effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
         while (smokeState.masterBypassCalls.load(std::memory_order_relaxed) <= bypassCallsBefore &&
                std::chrono::steady_clock::now() < bypassDeadline) {
           pumpMessages();
@@ -2320,7 +2200,6 @@ int main(const int argc, char **argv) {
     webView.detach(activeEditorOwner);
     editorOwnershipRespected = !webView.isAttachedTo(activeEditorOwner) &&
         editorOwnershipRespected;
-    webViewProfile.captureChildProcesses();
   }
   if (parent != nullptr && IsWindow(parent) != FALSE) {
     std::error_code setupError;
@@ -2402,7 +2281,7 @@ int main(const int argc, char **argv) {
           ShowWindow(parent, SW_SHOWNOACTIVATE);
           std::atomic_bool fallbackEvaluationPending{false};
           const auto deadline =
-              std::chrono::steady_clock::now() + kCompletionTimeout;
+              effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
           auto nextFallbackEvaluation =
               std::chrono::steady_clock::now() + std::chrono::seconds(1);
           while (!missingResourceGuidanceShown &&
@@ -2442,7 +2321,6 @@ int main(const int argc, char **argv) {
                   << cleanupError.message() << "\n";
       }
     }
-    webViewProfile.captureChildProcesses();
   }
   // An invalid runtime path must surface the loader's creation failure directly,
   // without waiting for the watchdog or claiming that a browser started.
@@ -2462,7 +2340,7 @@ int main(const int argc, char **argv) {
                            effetune::vst::plugin::kDefaultEditorWidth,
                            effetune::vst::plugin::kDefaultEditorHeight)) {
           ShowWindow(stalledParent, SW_SHOWNOACTIVATE);
-          const auto deadline = std::chrono::steady_clock::now() + kCompletionTimeout;
+          const auto deadline = effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
           while (!runtimeFailureDiagnosed &&
                  stalled.status() != effetune::vst::WebViewStatus::initialisationTimedOut &&
                  std::chrono::steady_clock::now() < deadline) {
@@ -2497,7 +2375,6 @@ int main(const int argc, char **argv) {
     if (stalledParent != nullptr) {
       DestroyWindow(stalledParent);
     }
-    webViewProfile.captureChildProcesses();
   }
 
   // A valid runtime still needs its owner STA to dispatch completion callbacks.
@@ -2528,7 +2405,7 @@ int main(const int argc, char **argv) {
               delayed.status() == effetune::vst::WebViewStatus::initialisationTimedOut &&
               text.find(L"EFFETUNE-UI-TIMEOUT") != std::wstring::npos &&
               text.find(L"repair the Microsoft Edge WebView2 Runtime") != std::wstring::npos;
-          const auto deadline = std::chrono::steady_clock::now() + kCompletionTimeout;
+          const auto deadline = effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
           while (delayed.status() != effetune::vst::WebViewStatus::ready &&
                  std::chrono::steady_clock::now() < deadline) {
             MSG message{};
@@ -2546,13 +2423,12 @@ int main(const int argc, char **argv) {
       }
       DestroyWindow(delayedParent);
     }
-    webViewProfile.captureChildProcesses();
   }
 
   // A host that opens the editor from a multi-threaded apartment can never run
   // WebView2, so the editor has to say so natively instead of handing back an
   // empty window that no one can diagnose.
-  std::thread apartmentProbe([&] {
+  effetune::vst::testing::TestThread apartmentProbe([&] {
     if (FAILED(CoInitializeEx(nullptr, COINIT_MULTITHREADED))) {
       return;
     }
@@ -2607,7 +2483,7 @@ int main(const int argc, char **argv) {
   std::atomic_bool parentObservedChildDestruction{false};
   ParentWindowContention parentContention{
       &processorLikeEditorMutex, &parentObservedChildDestruction};
-  std::thread offThreadUiOwner([&] {
+  effetune::vst::testing::TestThread offThreadUiOwner([&] {
     if (FAILED(CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED))) {
       offThreadHostPublished.store(true, std::memory_order_release);
       return;
@@ -2961,4 +2837,9 @@ int main(const int argc, char **argv) {
                "Room EQ measurement import, About notices, external links, bypass, and editor "
                "reattachment\n";
   return 0;
+}
+
+int main(const int argc, char **argv) {
+  return effetune::vst::testing::runWebViewTest(
+      [&] { return runTestBody(argc, argv); }, std::chrono::seconds(1800));
 }

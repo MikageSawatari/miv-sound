@@ -343,6 +343,7 @@ displayedAutomationValue(const AutomationTargetDescriptor &target,
 
 EffeTuneProcessor::EffeTuneProcessor()
     : telemetryScratch_(EngineHost::kDefaultTelemetryBytes + OutputAnalyzers::kTelemetryBytes) {
+  dataDirectoryError_ = resolveSoundDataDirectory().error;
   state_.appVersion = EFFETUNE_PLUGIN_VERSION_STR;
 #if defined(EFFETUNE_AUTOMATION_HOST_GATE_FIXTURE)
   state_ = automationHostGateFixtureDocument();
@@ -375,9 +376,15 @@ FUnknown *EffeTuneProcessor::createInstance(void *context) {
 }
 
 tresult PLUGIN_API EffeTuneProcessor::initialize(FUnknown *context) {
-  if (configStore_.path().empty() || presetStore_.presetPath().empty()) {
+  // Check again before constructing WebView2: the host may have changed its
+  // process environment since the stores were constructed. Keep an original
+  // failure too, since those stores intentionally retain their invalid paths.
+  const auto directory = resolveSoundDataDirectory();
+  if (dataDirectoryError_ != nullptr || directory.error != nullptr ||
+      configStore_.path().empty() || presetStore_.presetPath().empty()) {
 #if defined(_WIN32)
-    OutputDebugStringA(kDataDirectoryError);
+    OutputDebugStringA(directory.error != nullptr ? directory.error :
+        dataDirectoryError_ != nullptr ? dataDirectoryError_ : kDataDirectoryError);
     OutputDebugStringA("\n");
 #endif
     return kInvalidArgument;

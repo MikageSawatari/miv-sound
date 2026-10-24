@@ -1,5 +1,7 @@
 #pragma once
 
+#include <initializer_list>
+
 // A failing test process must never open a modal dialog: on Windows the Debug
 // CRT reports abort() and assertion failures through a message box, which stops
 // the run dead on a developer desktop and blocks CI until it times out. Calling
