@@ -17,7 +17,7 @@ inline constexpr char kDataDirectoryError[] =
     "mIV Sound requires MIV_SOUND_DATA_DIR to be a non-empty absolute path";
 inline constexpr char kWebViewDataDirectoryOverrideError[] =
     "mIV Sound cannot guarantee its data directory while WEBVIEW2_USER_DATA_FOLDER "
-    "is non-empty; unset it before loading mIV Sound";
+    "is set (even to an empty value); unset it before loading mIV Sound";
 
 struct SoundDataDirectory {
   std::filesystem::path path;
@@ -28,9 +28,12 @@ struct SoundDataDirectory {
 // APPDATA, home, temporary directory, or current working directory.
 [[nodiscard]] inline SoundDataDirectory resolveSoundDataDirectory() {
 #if defined(_WIN32)
-  // WebView2 gives this process-wide override priority over its API argument.
-  // Refuse to start rather than silently write outside mIV's data directory.
-  if (GetEnvironmentVariableW(L"WEBVIEW2_USER_DATA_FOLDER", nullptr, 0) > 1)
+  // WebView2 gives this process-wide override priority over its API argument,
+  // even when it exists with an empty value. Only an absent variable is safe.
+  SetLastError(ERROR_SUCCESS);
+  const auto overrideLength =
+      GetEnvironmentVariableW(L"WEBVIEW2_USER_DATA_FOLDER", nullptr, 0);
+  if (overrideLength != 0 || GetLastError() != ERROR_ENVVAR_NOT_FOUND)
     return {{}, kWebViewDataDirectoryOverrideError};
   const auto length = GetEnvironmentVariableW(L"MIV_SOUND_DATA_DIR", nullptr, 0);
   if (length == 0) return {{}, kDataDirectoryError};

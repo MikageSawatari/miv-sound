@@ -139,12 +139,15 @@ void testWebViewDataDirectoryOverride(Plugin &dll, const fs::path &root) {
     environment.set(L"APPDATA", appData.c_str());
     environment.set(L"HOME", home.c_str());
     environment.set(L"USERPROFILE", home.c_str());
-    for (const wchar_t *value : {override.c_str(), L"relative", L" "}) {
+    for (const wchar_t *value : {override.c_str(), L"relative", L" ", L""}) {
       environment.set(L"WEBVIEW2_USER_DATA_FOLDER", value);
+      expect(testing::testEnvironmentValue(L"WEBVIEW2_USER_DATA_FOLDER") == std::wstring(value),
+             "the override exists with the requested value, including empty");
+      SetLastError(ERROR_ENVVAR_NOT_FOUND); // A stale error must not hide an empty override.
       const auto resolved = resolveSoundDataDirectory();
       expect(resolved.path.empty() && resolved.error != nullptr &&
                  std::string(resolved.error) == kWebViewDataDirectoryOverrideError,
-             "a non-empty WebView2 override has a distinct storage diagnostic");
+             "a present WebView2 override, even empty, has a distinct storage diagnostic");
       ConfigStore config;
       PresetStore presets;
       std::string content;
@@ -168,16 +171,16 @@ void testWebViewDataDirectoryOverride(Plugin &dll, const fs::path &root) {
   } // Restore HOME/USERPROFILE/APPDATA and cwd before any valid initialization.
   ScopedTestEnvironment environment(kStorageVariables, testing::webViewCleanupFailed);
   environment.set(L"MIV_SOUND_DATA_DIR", root.c_str());
-  for (const wchar_t *value : {static_cast<const wchar_t *>(nullptr), L""}) {
-    environment.set(L"WEBVIEW2_USER_DATA_FOLDER", value);
-    const auto resolved = resolveSoundDataDirectory();
-    expect(resolved.path == root && resolved.error == nullptr,
-           "an absent or empty WebView2 override permits mIV storage");
-    auto component = owned(dll.create());
-    expect(component->initialize(nullptr) == kResultOk,
-           "an absent or empty WebView2 override permits startup");
-    expect(component->terminate() == kResultOk, "terminate valid storage component");
-  }
+  environment.set(L"WEBVIEW2_USER_DATA_FOLDER", nullptr);
+  expect(!testing::testEnvironmentValue(L"WEBVIEW2_USER_DATA_FOLDER").has_value(),
+         "the WebView2 override is completely absent");
+  const auto resolved = resolveSoundDataDirectory();
+  expect(resolved.path == root && resolved.error == nullptr,
+         "an absent WebView2 override permits mIV storage");
+  auto component = owned(dll.create());
+  expect(component->initialize(nullptr) == kResultOk,
+         "an absent WebView2 override permits startup");
+  expect(component->terminate() == kResultOk, "terminate valid storage component");
 }
 
 void testStores(const fs::path &root) {
