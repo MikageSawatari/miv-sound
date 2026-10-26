@@ -133,29 +133,30 @@ inline std::wstring normaliseProfilePath(const std::filesystem::path &path) {
   return result;
 }
 
-inline bool commandUsesProfile(const std::wstring &command,
-                               const std::filesystem::path &profile) {
+inline std::vector<std::filesystem::path> commandUserDataFolders(const std::wstring &command) {
   int count = 0;
   auto **arguments = CommandLineToArgvW(command.c_str(), &count);
   if (arguments == nullptr) throw std::runtime_error("Cannot parse WebView2 command line");
-  bool matches = false;
-  unsigned switches = 0;
-  const auto expected = normaliseProfilePath(profile);
+  std::vector<std::filesystem::path> folders;
   for (int index = 1; index < count; ++index) {
     const std::wstring argument(arguments[index]);
     constexpr wchar_t prefix[] = L"--user-data-dir=";
     if (argument.starts_with(prefix)) {
-      ++switches;
-      const auto value = normaliseProfilePath(argument.substr(std::size(prefix) - 1));
-      matches = _wcsicmp(value.c_str(), expected.c_str()) == 0;
+      folders.emplace_back(argument.substr(std::size(prefix) - 1));
     } else if (argument == L"--user-data-dir" && index + 1 < count) {
-      ++switches;
-      const auto value = normaliseProfilePath(arguments[++index]);
-      matches = _wcsicmp(value.c_str(), expected.c_str()) == 0;
+      folders.emplace_back(arguments[++index]);
     }
   }
   LocalFree(arguments);
-  return switches == 1 && matches;
+  return folders;
+}
+
+inline bool commandUsesProfile(const std::wstring &command,
+                               const std::filesystem::path &profile) {
+  const auto folders = commandUserDataFolders(command);
+  return folders.size() == 1 &&
+      _wcsicmp(normaliseProfilePath(folders.front()).c_str(),
+               normaliseProfilePath(profile).c_str()) == 0;
 }
 
 class ProcessHandle {
@@ -252,7 +253,9 @@ inline std::wstring processCommandLine(HANDLE process, DWORD processId) {
       });
 }
 
-inline std::vector<DWORD> profileProcesses(const std::filesystem::path &profile) {
+inline std::vector<DWORD> inspectProfileProcesses(
+    const std::filesystem::path &profile,
+    const std::function<void(DWORD, DWORD, const std::wstring &)> &observeCommand) {
   ProcessHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
   if (snapshot.get() == INVALID_HANDLE_VALUE) throw std::runtime_error("Cannot enumerate processes");
   PROCESSENTRY32W entry{};
@@ -271,11 +274,61 @@ inline std::vector<DWORD> profileProcesses(const std::filesystem::path &profile)
                                std::to_string(error) + "); profile ownership unknown");
     }
     const auto command = processCommandLine(process.get(), entry.th32ProcessID);
+    if (!command.empty() && observeCommand)
+      observeCommand(entry.th32ProcessID, entry.th32ParentProcessID, command);
     if (!command.empty() && commandUsesProfile(command, profile))
       matches.push_back(entry.th32ProcessID);
   } while (Process32NextW(snapshot.get(), &entry));
   if (GetLastError() != ERROR_NO_MORE_FILES) throw std::runtime_error("Incomplete process snapshot");
   return matches;
+}
+
+inline std::vector<DWORD> profileProcesses(const std::filesystem::path &profile) {
+  return inspectProfileProcesses(profile, {});
+}
+
+struct WebViewProfileUse {
+  bool verified = false;
+  std::string diagnostic;
+};
+
+// Observe a LIVE WebView, before teardown deletes its temporary profile. Folder
+// existence alone also accepts leftovers; require a process using this exact
+// EBWebView directory and the currently configured data root as well.
+inline WebViewProfileUse observeWebViewProfileUse(
+    const std::filesystem::path &expectedRoot,
+    const std::filesystem::path &configuredRoot,
+    std::function<std::vector<DWORD>(const std::filesystem::path &)> scan = profileProcesses) {
+  const auto dataFolder = expectedRoot / "webview";
+  const auto profile = dataFolder / "EBWebView";
+  bool rootMatches = false, dataExists = false, profileExists = false;
+  std::vector<DWORD> processes;
+  std::string failure;
+  try {
+    rootMatches = expectedRoot.is_absolute() && configuredRoot.is_absolute() &&
+        _wcsicmp(normaliseProfilePath(expectedRoot).c_str(),
+                 normaliseProfilePath(configuredRoot).c_str()) == 0;
+    dataExists = std::filesystem::is_directory(dataFolder);
+    profileExists = std::filesystem::is_directory(profile);
+    if (expectedRoot.is_absolute()) processes = scan(profile);
+  } catch (const std::exception &error) {
+    failure = error.what();
+  }
+  const auto utf8 = [](const std::filesystem::path &path) {
+    const auto value = path.generic_u8string();
+    return std::string(reinterpret_cast<const char *>(value.data()), value.size());
+  };
+  std::ostringstream detail;
+  detail << "expected root='" << utf8(expectedRoot) << "', MIV_SOUND_DATA_DIR='"
+         << utf8(configuredRoot) << "', WebView2 profile='" << utf8(profile)
+         << "', root matches=" << rootMatches << ", webview exists=" << dataExists
+         << ", EBWebView exists=" << profileExists << ", matching process IDs=[";
+  for (std::size_t index = 0; index < processes.size(); ++index)
+    detail << (index == 0 ? "" : ",") << processes[index];
+  detail << ']';
+  if (!failure.empty()) detail << ", observation error: " << failure;
+  return {rootMatches && dataExists && profileExists && !processes.empty() && failure.empty(),
+          detail.str()};
 }
 
 struct WebViewExitWaitHooks {

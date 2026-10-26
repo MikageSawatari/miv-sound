@@ -269,6 +269,35 @@ void testScopedStorageEnvironment() {
   expect(unsafePathRejected && std::filesystem::exists(sandbox), "sandbox cleanup cannot delete its parent");
 }
 
+void testActiveProfileObservation() {
+  namespace fs = std::filesystem;
+  const auto configured = testEnvironmentValue(L"MIV_SOUND_DATA_DIR");
+  expect(configured.has_value(), "CTest provides storage for profile observation tests");
+  const auto parent = fs::path(*configured);
+  const auto root = recreateTestSandbox(parent, L"active-profile");
+  const auto profile = root / "webview" / "EBWebView";
+  const auto active = [&](const fs::path &requested) {
+    expect(requested == profile, "observe the exact nested profile, never its CTest parent");
+    return std::vector<DWORD>{123};
+  };
+  expect(!observeWebViewProfileUse(root, root, active).verified,
+         "a live process without its on-disk profile is insufficient");
+  fs::create_directories(profile);
+  expect(!observeWebViewProfileUse(root, parent, active).verified,
+         "the CTest parent cannot replace the active per-run data root");
+  expect(!observeWebViewProfileUse(root, root, [](const auto &) {
+    return std::vector<DWORD>{};
+  }).verified, "existing directories without a matching live process are insufficient");
+  const auto confirmed = observeWebViewProfileUse(root, root, active);
+  expect(confirmed.verified && !confirmed.diagnostic.empty(),
+         "verify the configured per-run root, on-disk profile and live process together");
+  const auto unreadable = observeWebViewProfileUse(root, root, [](const auto &) -> std::vector<DWORD> {
+    throw std::runtime_error("synthetic process query failure");
+  });
+  expect(!unreadable.verified && unreadable.diagnostic.find("synthetic process query failure") != std::string::npos,
+         "a process query failure reports its reason and cannot pass profile verification");
+}
+
 constexpr auto kLengthMismatch = static_cast<NTSTATUS>(0xc0000004UL);
 constexpr auto kAccessDenied = static_cast<NTSTATUS>(0xc0000022UL);
 constexpr auto kTerminating = static_cast<NTSTATUS>(0xc000010aUL);
@@ -433,6 +462,7 @@ int main(int argc, char **argv) {
     expect(argc == 2, "expected the plugin DLL path for read-only observer verification");
     testModuleCallbackObserver(argv[1]);
     testScopedStorageEnvironment();
+    testActiveProfileObservation();
     testPauseReleaseBeforeJoin();
     testWorkerUnwindPumpsOwnerSTA();
     testLongQueryCannotBypassDeadline();

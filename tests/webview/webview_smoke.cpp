@@ -19,6 +19,7 @@
 #include <iterator>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -655,23 +656,29 @@ int runTestBody(const int argc, char **argv) {
   effetune::vst::testing::suppressCrtModalDialogs();
   const auto errorMode = SetErrorMode(0);
   SetErrorMode(errorMode | SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
-  if (argc == 2 && std::string_view(argv[1]) ==
-                       "--non-pumping-owner-child") {
-    return runNonPumpingOwnerChild();
-  }
+  const bool nonPumpingOnly = argc == 2 && std::string_view(argv[1]) ==
+                       "--non-pumping-owner-child";
   const bool startupOnly = argc == 4 && std::string_view(argv[1]) == "--visualizer-startup-only" &&
       std::string_view(argv[2]) == "--assets";
-  if (argc != 1 && !startupOnly) {
+  if (argc != 1 && !startupOnly && !nonPumpingOnly) {
     std::cerr << "Usage: effetune_webview_smoke [--visualizer-startup-only --assets <directory>]\n";
     return 1;
   }
-  if (!startupOnly && !runNonPumpingOwnerWatchdog()) {
-    std::cerr << "WebView teardown blocked on a non-pumping owner STA\n";
-    return 1;
-  }
+  // The watchdog runs IN THIS PROCESS, and constructs a WebView immediately.
+  // Select the per-run profile before the FIRST WebView2 API call, including
+  // the standalone non-pumping-owner probe.
   ScopedWebViewProfile webViewProfile;
   if (!webViewProfile.configured()) {
     std::cerr << "Unable to create an isolated WebView2 user-data profile\n";
+    return 1;
+  }
+  const auto selectedRoot = effetune::vst::soundDataDirectory().u8string();
+  std::cout << "WebView profile selected before first creation: MIV_SOUND_DATA_DIR=\""
+            << std::string(reinterpret_cast<const char *>(selectedRoot.data()), selectedRoot.size())
+            << "\"\n";
+  if (nonPumpingOnly) return runNonPumpingOwnerChild();
+  if (!startupOnly && !runNonPumpingOwnerWatchdog()) {
+    std::cerr << "WebView teardown blocked on a non-pumping owner STA\n";
     return 1;
   }
   const auto instance = GetModuleHandleW(nullptr);
@@ -984,6 +991,7 @@ int runTestBody(const int argc, char **argv) {
   bool multiThreadedApartmentDiagnosed = false;
   bool editorReportedReady = false;
   bool webViewDataFolderUsed = false;
+  std::string webViewDataFolderDiagnostics;
   bool attached = false;
   {
     int firstEditorOwner = 0;
@@ -1107,8 +1115,34 @@ int runTestBody(const int argc, char **argv) {
         webView.serviceInitialisation();
         editorReportedReady =
             webView.status() == effetune::vst::WebViewStatus::ready;
-        webViewDataFolderUsed =
-            std::filesystem::is_directory(webViewProfile.path() / "webview");
+        // Record actual process arguments for this test's storage, including
+        // the old CTest parent. Never treat a parent-profile match as success.
+        std::ostringstream actualProfiles;
+        const auto testRootPrefix = effetune::vst::testing::normaliseProfilePath(
+            webViewProfile.path().parent_path()) + L"\\";
+        const auto observation = effetune::vst::testing::observeWebViewProfileUse(
+            webViewProfile.path(), effetune::vst::soundDataDirectory(),
+            [&](const std::filesystem::path &expectedProfile) {
+              return effetune::vst::testing::inspectProfileProcesses(expectedProfile,
+                  [&](const DWORD pid, const DWORD parentPid, const std::wstring &command) {
+                    for (const auto &folder : effetune::vst::testing::commandUserDataFolders(command)) {
+                      const auto normalized = effetune::vst::testing::normaliseProfilePath(folder);
+                      const bool inTestRoot = normalized.size() >= testRootPrefix.size() &&
+                          _wcsnicmp(normalized.c_str(), testRootPrefix.c_str(),
+                                    testRootPrefix.size()) == 0;
+                      if (!inTestRoot && parentPid != GetCurrentProcessId()) continue;
+                      const auto utf8 = folder.u8string();
+                      actualProfiles << " PID " << pid << " (parent " << parentPid << ") --user-data-dir=\""
+                          << std::string(reinterpret_cast<const char *>(utf8.data()), utf8.size()) << '"';
+                    }
+                  });
+            });
+        webViewDataFolderUsed = observation.verified;
+        webViewDataFolderDiagnostics = observation.diagnostic +
+            "; actual process arguments:" + (actualProfiles.str().empty()
+                ? " <none for this test>" : actualProfiles.str());
+        std::cout << "WebView storage " << (webViewDataFolderUsed ? "PASS: " : "FAILED: ")
+                  << webViewDataFolderDiagnostics << '\n';
         unsupportedStateWarningShown = waitForJavascript(
             "window.app?.initialized === true && "
             "window.audioManager?.unsupportedWarningShown === true && "
@@ -2654,6 +2688,7 @@ int runTestBody(const int argc, char **argv) {
   const auto dataFolderUtf8 = (webViewProfile.path() / "webview").generic_u8string();
   checkpointSummary.addMember("webviewDataFolder", std::string(
       reinterpret_cast<const char *>(dataFolderUtf8.data()), dataFolderUtf8.size()));
+  checkpointSummary.addMember("webviewDataFolderDiagnostics", webViewDataFolderDiagnostics);
   std::cout << "WebView smoke checkpoints: " << choc::json::toString(checkpointSummary) << '\n';
 
   if (!profileCleaned) {
@@ -2842,7 +2877,8 @@ int runTestBody(const int argc, char **argv) {
     return 1;
   }
   if (!webViewDataFolderUsed) {
-    std::cerr << "The ready editor did not create its MIV_SOUND_DATA_DIR/webview folder\n";
+    std::cerr << "The ready editor did not verify its MIV_SOUND_DATA_DIR/webview storage: "
+              << webViewDataFolderDiagnostics << '\n';
     return 1;
   }
   if (!multiThreadedApartmentDiagnosed) {
