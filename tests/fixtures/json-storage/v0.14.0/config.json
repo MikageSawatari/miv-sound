@@ -1,0 +1,43 @@
+{
+  "language": "ja",
+  "theme": "midnight",
+  "columns": 4,
+  "startupView": "visualizer",
+  "pipelineStartup": "preset",
+  "startupPreset": "Short gain",
+  "onboardingTourShown": true,
+  "frequencyPreviewSound": "sine",
+  "sfzMaxSizeMiB": 512,
+  "spectrumOverlayQuality": "hq",
+  "spectrumOverlayPeakHold": true,
+  "visualSync": true,
+  "libraryStartupView": "tracks",
+  "autoLaunch": false,
+  "startMinimized": false,
+  "minimizeToTray": true,
+  "checkForUpdatesOnStartup": false,
+  "hardwareAcceleration": true,
+  "midiController": {
+    "version": 1,
+    "devices": [{ "key": "synthetic-controller", "protocol": "generic" }],
+    "mappings": [{
+      "id": "m-00000000-0000-4000-8000-000000000001",
+      "device": "synthetic-controller",
+      "source": { "kind": "note", "channel": 0, "number": 60, "keyCombo": "", "mode": "" },
+      "target": { "type": "_global", "instance": "first", "param": "masterBypass", "element": 0 },
+      "map": { "lo": 0, "hi": 1, "sensitivity": 1, "dir": 1, "buttonMode": "toggle", "behavior": "direct", "amount": 1 }
+    }]
+  },
+  "powerSaving": {
+    "mode": "continuous",
+    "silenceThresholdDb": -80,
+    "fullSuspendDelaySeconds": 300,
+    "skipDisplayDspWhenHidden": false
+  },
+  "offlineOutput": {
+    "format": "wav",
+    "sampleRate": 96000,
+    "wavSampleFormat": "pcm24",
+    "flacSampleFormat": "pcm16"
+  }
+}

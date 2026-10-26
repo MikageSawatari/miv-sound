@@ -1,0 +1,8 @@
+[
+  {
+    "id": "0123456789abcdef01234567",
+    "name": "Piano.sfz",
+    "path": "@SFZ_ROOT@/Piano.sfz",
+    "root": "@SFZ_ROOT@"
+  }
+]

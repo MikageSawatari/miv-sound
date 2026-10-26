@@ -1,0 +1,18 @@
+[
+  {
+    "id": "0123456789abcdef01234567",
+    "name": "Piano.sfz",
+    "path": "@SFZ_ROOT@/Piano.sfz",
+    "root": "@SFZ_ROOT@",
+    "bankPaths": ["Example.bank.xml"],
+    "importedAt": "2026-04-05T06:07:08.009Z"
+  },
+  {
+    "id": "89abcdef0123456789abcdef",
+    "name": "Nested/Pad.sfz",
+    "path": "@SFZ_ROOT@/Nested/Pad.sfz",
+    "root": "@SFZ_ROOT@",
+    "bankPaths": ["Example.bank.xml"],
+    "importedAt": "2026-04-05T06:07:08.009Z"
+  }
+]

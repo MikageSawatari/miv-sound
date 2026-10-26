@@ -1,0 +1,18 @@
+{
+  "language": "en",
+  "theme": "paper",
+  "columns": 2,
+  "startupView": "visualizer",
+  "pipelineStartup": "last",
+  "frequencyPreviewSound": "bandpassNoise",
+  "sfzMaxSizeMiB": 256,
+  "spectrumOverlayQuality": "hq",
+  "spectrumOverlayPeakHold": false,
+  "visualSync": true,
+  "offlineOutput": {
+    "format": "flac",
+    "sampleRate": 48000,
+    "wavSampleFormat": "float32",
+    "flacSampleFormat": "pcm24"
+  }
+}

@@ -107,6 +107,18 @@ else()
 endif()
 add_test(NAME effetune_file_exchange_tests COMMAND effetune_file_exchange_tests)
 
+add_executable(effetune_json_storage_compatibility_tests unit/json_storage_compatibility_tests.cpp)
+target_link_libraries(effetune_json_storage_compatibility_tests PRIVATE effetune_engine)
+target_compile_features(effetune_json_storage_compatibility_tests PRIVATE cxx_std_20)
+if(MSVC)
+  target_compile_options(effetune_json_storage_compatibility_tests PRIVATE /W4 /WX /utf-8)
+else()
+  target_compile_options(effetune_json_storage_compatibility_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+add_test(NAME effetune_json_storage_compatibility_tests
+  COMMAND effetune_json_storage_compatibility_tests "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/json-storage")
+set_tests_properties(effetune_json_storage_compatibility_tests PROPERTIES TIMEOUT 120)
+
 if(WIN32 AND TARGET effetune_plugin)
   add_executable(effetune_webview_test_lifetime_tests unit/webview_test_lifetime_tests.cpp)
   target_compile_features(effetune_webview_test_lifetime_tests PRIVATE cxx_std_20)
@@ -219,6 +231,10 @@ if(WIN32 AND TARGET effetune_ui_assets)
 endif()
 
 if(TARGET effetune_ui_assets)
+  add_test(NAME effetune_json_storage_ui_compatibility
+    COMMAND "${EFFETUNE_NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/esm/json-storage-compatibility.test.mjs"
+      --assets "${CMAKE_BINARY_DIR}/webview-assets" --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/json-storage")
+  set_tests_properties(effetune_json_storage_ui_compatibility PROPERTIES TIMEOUT 120)
   add_test(NAME effetune_vst_upstream_ui_tests
     COMMAND "${EFFETUNE_NODE_EXECUTABLE}"
             "${PROJECT_SOURCE_DIR}/tests/esm/vst-upstream-ui.test.mjs"

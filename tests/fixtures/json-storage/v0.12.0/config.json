@@ -1,0 +1,19 @@
+{
+  "language": "ja",
+  "theme": "graphite",
+  "columns": 3,
+  "startupView": "effects",
+  "pipelineStartup": "preset",
+  "startupPreset": "Short gain",
+  "spectrumOverlayQuality": "normal",
+  "spectrumOverlayPeakHold": true,
+  "visualSync": false,
+  "autoLaunch": false,
+  "hardwareAcceleration": true,
+  "powerSaving": {
+    "mode": "balanced",
+    "silenceThresholdDb": -80,
+    "fullSuspendDelaySeconds": 300,
+    "skipDisplayDspWhenHidden": true
+  }
+}

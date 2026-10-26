@@ -1,0 +1,22 @@
+{
+  "Short gain": {
+    "plugins": [
+      { "nm": "Volume", "en": true, "vl": -6, "ib": 0, "ob": 1, "ch": "L" },
+      { "nm": "DC Offset", "en": false, "of": 0.125 }
+    ]
+  },
+  "Imported long": {
+    "name": "Imported long",
+    "pipeline": [
+      {
+        "name": "Volume",
+        "enabled": false,
+        "parameters": { "vl": -3 },
+        "inputBus": 1,
+        "outputBus": 0,
+        "channel": "R"
+      }
+    ],
+    "timestamp": 1700000000000
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "language": "en",
+  "theme": "mint",
+  "columns": 2,
+  "pipelineColumnMode": "manual",
+  "startupView": "visualizer",
+  "onboardingTourShown": true,
+  "frequencyPreviewSound": "bandpassNoise",
+  "sfzMaxSizeMiB": 1024,
+  "libraryIncludeVideo": true,
+  "videoAutoRotate": false,
+  "offlineOutput": {
+    "format": "flac",
+    "sampleRate": 44100,
+    "wavSampleFormat": "pcm16",
+    "flacSampleFormat": "pcm16"
+  }
+}

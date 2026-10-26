@@ -1,0 +1,9 @@
+{
+  "Volume": {
+    "Quiet": { "vl": -6 },
+    "Loud": { "vl": 3 }
+  },
+  "DC Offset": {
+    "Positive": { "of": 0.125 }
+  }
+}
