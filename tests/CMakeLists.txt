@@ -130,6 +130,13 @@ add_test(NAME effetune_json_storage_compatibility_tests
 set_tests_properties(effetune_json_storage_compatibility_tests PROPERTIES TIMEOUT 120)
 
 if(WIN32 AND TARGET effetune_plugin)
+  add_executable(miv_webview_permission_tests unit/webview_permission_tests.cpp)
+  target_link_libraries(miv_webview_permission_tests PRIVATE effetune_choc user32 ole32 shell32 shlwapi)
+  target_include_directories(miv_webview_permission_tests PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  target_compile_features(miv_webview_permission_tests PRIVATE cxx_std_20)
+  target_compile_options(miv_webview_permission_tests PRIVATE /W4 /WX /utf-8)
+  add_test(NAME miv_webview_permission_tests COMMAND miv_webview_permission_tests)
+
   # Link a WebViewHost double, never the WebView2 implementation or product DLL.
   add_executable(miv_processor_startup_tests
     unit/processor_startup_tests.cpp

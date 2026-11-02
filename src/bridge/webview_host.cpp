@@ -1,5 +1,6 @@
 #include "bridge/webview_host.h"
 #include "bridge/data_directory.h"
+#include "bridge/webview_permission_policy.h"
 
 #include "choc/gui/choc_WebView.h"
 #include "choc/text/choc_JSON.h"
@@ -653,6 +654,7 @@ struct WebViewGeneration : public std::enable_shared_from_this<WebViewGeneration
       choc::ui::WebView::Options options;
 #if defined(_WIN32)
       options.userDataFolder = (directory / "webview").wstring();
+      options.shouldDenyPermission = detail::denyWebViewCapturePermission;
 #endif
 #if !defined(NDEBUG)
       options.enableDebugMode = true;

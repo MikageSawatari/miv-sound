@@ -40,6 +40,20 @@ inline uint64_t mivSoundTestPendingWebViewCallbacks() noexcept
     return mivSoundPendingWebViewCallbacks.load();
 }
 
+// Kept independent of WebView construction so COM argument doubles can test it.
+inline HRESULT mivSoundHandlePermissionRequest (ICoreWebView2PermissionRequestedEventArgs* args,
+                                               const std::function<bool(int)>& shouldDeny)
+{
+    if (args == nullptr) return S_OK;
+    auto kind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+    if (args->get_PermissionKind (std::addressof (kind)) != S_OK) return S_OK;
+    if (shouldDeny && shouldDeny (static_cast<int> (kind)))
+        return args->put_State (COREWEBVIEW2_PERMISSION_STATE_DENY);
+    if (kind == COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ)
+        args->put_State (COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+    return S_OK;
+}
+
 // A completion remains outstanding until Invoke RETURNS, or its handler dies.
 // Environment and controller share an EventHandler, so use separate tokens.
 struct MivSoundPendingWebViewCallback
@@ -77,7 +91,38 @@ replaceOnce('        std::function<void(choc::ui::WebView&)> webviewIsReady;',
 
         /// Windows only: reports a failed environment or controller creation.
         /// May run synchronously during construction or later on the owner STA.
-        std::function<void(const std::string&)> webviewInitialisationError;`);
+        std::function<void(const std::string&)> webviewInitialisationError;
+
+        /// Windows only: return true to deny a base WebView2 permission kind.
+        /// False preserves CHOC's existing policy (including clipboard read).
+        std::function<bool(int)> shouldDenyPermission;`);
+
+replaceOnce('    COMPtr<EventHandler> eventHandler;', `    COMPtr<EventHandler> eventHandler;
+    EventRegistrationToken permissionToken {};
+    bool permissionRegistered = false;`);
+replaceOnce('            view->add_PermissionRequested (this, std::addressof (token));',
+  `            result = view->add_PermissionRequested (this, std::addressof (ownerPimpl.permissionToken));
+            if (FAILED (result))
+            {
+                ownerPimpl.reportInitialisationError (result);
+                view->Release();
+                controller->Close();
+                return result;
+            }
+            ownerPimpl.permissionRegistered = true;`);
+replaceOnce(`            if (args == nullptr)
+                return S_OK;
+
+            auto permissionKind = COREWEBVIEW2_PERMISSION_KIND_UNKNOWN_PERMISSION;
+
+            if (args->get_PermissionKind (std::addressof (permissionKind)) != S_OK)
+                return S_OK;
+
+            if (permissionKind == COREWEBVIEW2_PERMISSION_KIND_CLIPBOARD_READ)
+                args->put_State (COREWEBVIEW2_PERMISSION_STATE_ALLOW);
+
+            return S_OK;`, `            if (deletionCheckerRef->deleted) return E_FAIL;
+            return mivSoundHandlePermissionRequest (args, ownerPimpl.options.shouldDenyPermission);`);
 
 replaceOnce('if (auto userDataFolder = getUserDataFolder(); ! userDataFolder.empty())',
   'if (auto userDataFolder = options.userDataFolder.empty() ? getUserDataFolder() : options.userDataFolder; ! userDataFolder.empty())');
@@ -93,6 +138,11 @@ replaceOnce(`        deletionChecker->deleted = true;
         hwnd.reset();`,
   `        deletionChecker->deleted = true;
 
+        if (coreWebView && permissionRegistered)
+        {
+            coreWebView->remove_PermissionRequested (permissionToken);
+            permissionRegistered = false;
+        }
         if (coreWebViewController)
             coreWebViewController->Close();
 

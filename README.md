@@ -31,6 +31,8 @@ CTest supplies separate disposable `MIV_SOUND_DATA_DIR` paths for tests.
 `ui-shim/presets/miv-original.json` defines **mIV Original** for all five aspect
 ratios. The asset build inserts it first in each system preset file, with piano
 roll notes, artwork and track details, a spectrum, and a two-line lyrics caption.
+The spectrum uses a cyan-to-violet frequency gradient. White caption text and
+its shadow sit over an 80% black band, separating lyrics from the bars behind it.
 Timed lyrics show the current and next lines. Untimed lyrics scroll through the
 caption with broad top and bottom fades, including the dark backplate. The
 caption grows upward from its fixed bottom edge and reserves an unfaded middle
@@ -50,6 +52,10 @@ changed by this default. Without a saved layout, Visualizer loads the first
 view; it remains available from **Settings → Take the tour**.
 Rejected initialization writes no first-run config. Editor creation and attachment
 are refused until initialization succeeds.
+Browser microphone recovery is excluded from the VST UI; audio comes from the
+host. On Windows, WebView2 microphone and camera permissions are denied without
+a prompt and logged to debugger output. Other permissions keep their existing
+behavior, including CHOC's clipboard-read allowance.
 
 The upstream README is retained below for reference.
 

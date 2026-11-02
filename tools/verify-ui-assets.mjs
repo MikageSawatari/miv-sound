@@ -29,6 +29,11 @@ const presetIntegration = await readFile(
 const pipelineAiDialog = await readFile(
   path.join(assets, 'js', 'ui', 'pipeline', 'pipeline-ai-dialog.js'), 'utf8');
 const browserAudioManager = await readFile(path.join(assets, 'js', 'audio-manager.js'), 'utf8');
+if (app.includes('resumeAudioFromInteraction') || app.includes('requestResumeFromUserInteraction') ||
+    app.includes("navigator.mediaDevices.addEventListener('devicechange'") ||
+    !browserAudioManager.includes('enabled: false, // Native VST audio never owns browser input or power recovery.')) {
+  throw new Error('The VST UI must not run browser microphone/power recovery on focus or visibility changes');
+}
 const pipelineManager = await readFile(path.join(assets, 'js', 'ui', 'pipeline-manager.js'), 'utf8');
 const uiEventHandler = await readFile(
   path.join(assets, 'js', 'ui', 'pipeline', 'ui-event-handler.js'), 'utf8');

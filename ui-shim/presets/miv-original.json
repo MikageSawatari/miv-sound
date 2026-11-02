@@ -293,14 +293,19 @@
             {
               "pos": 0,
               "color": "#40dfff"
+            },
+            {
+              "pos": 1,
+              "color": "#8a7dff"
             }
           ],
           "motion": {
             "mode": "none",
             "speed": 0.25
           },
-          "mode": "solid",
-          "color": "#ffffff"
+          "mode": "gradient",
+          "color": "#40dfff",
+          "direction": "frequency"
         },
         "params": {
           "dr": -78,
@@ -434,7 +439,7 @@
             "enabled": true,
             "amount": 1,
             "fill": "#000000",
-            "fillOpacity": 0.45,
+            "fillOpacity": 0.8,
             "border": "#000000",
             "borderWidth": 0,
             "radius": 16,
@@ -783,14 +788,19 @@
             {
               "pos": 0,
               "color": "#40dfff"
+            },
+            {
+              "pos": 1,
+              "color": "#8a7dff"
             }
           ],
           "motion": {
             "mode": "none",
             "speed": 0.25
           },
-          "mode": "solid",
-          "color": "#ffffff"
+          "mode": "gradient",
+          "color": "#40dfff",
+          "direction": "frequency"
         },
         "params": {
           "dr": -78,
@@ -924,7 +934,7 @@
             "enabled": true,
             "amount": 1,
             "fill": "#000000",
-            "fillOpacity": 0.45,
+            "fillOpacity": 0.8,
             "border": "#000000",
             "borderWidth": 0,
             "radius": 12,
@@ -1273,14 +1283,19 @@
             {
               "pos": 0,
               "color": "#40dfff"
+            },
+            {
+              "pos": 1,
+              "color": "#8a7dff"
             }
           ],
           "motion": {
             "mode": "none",
             "speed": 0.25
           },
-          "mode": "solid",
-          "color": "#ffffff"
+          "mode": "gradient",
+          "color": "#40dfff",
+          "direction": "frequency"
         },
         "params": {
           "dr": -78,
@@ -1414,7 +1429,7 @@
             "enabled": true,
             "amount": 1,
             "fill": "#000000",
-            "fillOpacity": 0.45,
+            "fillOpacity": 0.8,
             "border": "#000000",
             "borderWidth": 0,
             "radius": 21,
@@ -1763,14 +1778,19 @@
             {
               "pos": 0,
               "color": "#40dfff"
+            },
+            {
+              "pos": 1,
+              "color": "#8a7dff"
             }
           ],
           "motion": {
             "mode": "none",
             "speed": 0.25
           },
-          "mode": "solid",
-          "color": "#ffffff"
+          "mode": "gradient",
+          "color": "#40dfff",
+          "direction": "frequency"
         },
         "params": {
           "dr": -78,
@@ -1904,7 +1924,7 @@
             "enabled": true,
             "amount": 1,
             "fill": "#000000",
-            "fillOpacity": 0.45,
+            "fillOpacity": 0.8,
             "border": "#000000",
             "borderWidth": 0,
             "radius": 28,
@@ -2253,14 +2273,19 @@
             {
               "pos": 0,
               "color": "#40dfff"
+            },
+            {
+              "pos": 1,
+              "color": "#8a7dff"
             }
           ],
           "motion": {
             "mode": "none",
             "speed": 0.25
           },
-          "mode": "solid",
-          "color": "#ffffff"
+          "mode": "gradient",
+          "color": "#40dfff",
+          "direction": "frequency"
         },
         "params": {
           "dr": -78,
@@ -2394,7 +2419,7 @@
             "enabled": true,
             "amount": 1,
             "fill": "#000000",
-            "fillOpacity": 0.45,
+            "fillOpacity": 0.8,
             "border": "#000000",
             "borderWidth": 0,
             "radius": 28,

@@ -210,6 +210,16 @@ await cp(path.join(projectRoot, 'ui-shim', 'vendor', 'jszip-3.10.2.min.js'),
 
 const appPath = path.join(output, 'js', 'app.js');
 let app = await readText(appPath);
+// The host owns input and lifecycle recovery. The browser's focus/pageshow
+// recovery treats the absent microphone as a lost input and reacquires it.
+const browserAudioLifecycle = /        const powerController = this\.audioManager\.powerPolicyController;[\s\S]*?\n        \/\/ Handle audio device changes[^\n]*\n        if \(navigator\.mediaDevices[\s\S]*?\n        \}\n(?=    \}\n)/;
+app = replaceOnce(app, browserAudioLifecycle, `        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) this.uiManager.flushPipelineStateToLocalStorage?.();
+        }, true);
+        window.addEventListener?.('pagehide', () => {
+            this.uiManager.flushPipelineStateToLocalStorage?.();
+        }, true);
+`);
 const originalImport = `import { AudioManager } from './audio-manager.js';`;
 if (!app.includes(originalImport)) {
   throw new Error('Unable to locate the AudioManager import in js/app.js');
@@ -987,6 +997,9 @@ for (const localeFile of await readdir(localesPath)) {
 
 const browserAudioManagerPath = path.join(output, 'js', 'audio-manager.js');
 let browserAudioManager = await readText(browserAudioManagerPath);
+browserAudioManager = replaceOnce(browserAudioManager,
+  '            settings: window.appConfig?.powerSaving,',
+  '            enabled: false, // Native VST audio never owns browser input or power recovery.\n            settings: window.appConfig?.powerSaving,');
 const audioEncoderImport = `import { AudioEncoder } from './audio/audio-encoder.js';\n`;
 if (browserAudioManager.includes(audioEncoderImport)) {
   browserAudioManager = browserAudioManager.replace(audioEncoderImport, '');

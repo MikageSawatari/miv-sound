@@ -30,9 +30,15 @@ test('CHOC callback accounting generation rejects missing and duplicate source a
     assert.equal(generated.split('inline std::atomic<uint64_t> mivSoundPendingWebViewCallbacks').length - 1, 1);
     assert.equal(generated.split('const MivSoundPendingWebViewCallback::Invocation completion {').length - 1, 3);
     assert.match(generated, /controllerCompletion\.arm\(\);\s+result = env->CreateCoreWebView2Controller/);
+    assert.match(generated, /mivSoundHandlePermissionRequest \(args, ownerPimpl\.options\.shouldDenyPermission\)/);
+    assert.match(generated, /add_PermissionRequested \(this, std::addressof \(ownerPimpl\.permissionToken\)\)/);
+    const unregister = generated.indexOf('coreWebView->remove_PermissionRequested (permissionToken)');
+    assert.ok(unregister > 0 && unregister < generated.indexOf('coreWebViewController->Close();'));
     for (const anchor of [
       '#endif // __webview2_h__',
       '        virtual ~EventHandler() {}',
+      '            view->add_PermissionRequested (this, std::addressof (token));',
+      '    COMPtr<EventHandler> eventHandler;',
       '        virtual ~ExecuteScriptCompletedCallback() {}',
       '        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Environment* env) override',
       '        HRESULT STDMETHODCALLTYPE Invoke (HRESULT, ICoreWebView2Controller* controller) override',

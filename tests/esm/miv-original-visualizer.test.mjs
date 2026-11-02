@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { ASPECTS, ASPECT_FILES, MAX_EFFECTS, normalizeLayout, layoutsEqual, validateLayout }
+import { ASPECTS, ASPECT_FILES, MAX_EFFECTS, normalizeLayout, layoutsEqual, validateLayout, paletteModesForType }
   from '../../external/effetune/js/visualizer/visualizer-model.js';
 import { TEXT_LINE_HEIGHT } from '../../external/effetune/js/visualizer/visualizer-text.js';
 import { lyricsFrame, lyricsOpacity } from '../../external/effetune/js/visualizer/visualizer-lyrics.js';
 import { VisualizerRenderer } from '../../external/effetune/js/visualizer/visualizer-renderer.js';
 import { withRecordingCanvas } from './helpers/visualizer-recording-canvas.mjs';
+import { paletteColor } from '../../external/effetune/js/visualizer/visualizer-effects.js';
+import { GRADIENT_PRESETS } from '../../external/effetune/js/visualizer/visualizer-palette-presets.js';
 
 const layouts = JSON.parse(await readFile(new URL('../../ui-shim/presets/miv-original.json', import.meta.url), 'utf8'));
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-10, `${a} != ${b}`);
@@ -35,7 +37,7 @@ for (const aspect of ASPECTS) {
       const item = layout.items.find(i => i.type === type);
       const source = (type === 'notes' ? harmony : now).items.find(i => i.type === type);
       assert.deepEqual(item.params, source.params);
-      assert.deepEqual(item.palette, source.palette);
+      if (type === 'notes') assert.deepEqual(item.palette, source.palette);
       assert.deepEqual(item.effects.filter(e => e.type === 'backplate'),
         harmony.items.find(i => i.type === 'notes').effects);
     }
@@ -46,6 +48,16 @@ for (const aspect of ASPECTS) {
 
     const ratio = aspect.split(':').map(Number), height = 1280 * ratio[1] / ratio[0];
     const [notes, artwork, title, artist, album, spectrum, lyrics] = layout.items;
+    assert.ok(paletteModesForType('spectrum').includes(spectrum.palette.mode));
+    assert.equal(spectrum.palette.mode, 'gradient');
+    assert.equal(spectrum.palette.direction, 'frequency');
+    assert.deepEqual(spectrum.palette.stops, [{ pos: 0, color: '#40dfff' },
+      { pos: 1, color: GRADIENT_PRESETS.find(p => p.id === 'lavender').colors[0] }]);
+    const plate = lyrics.effects.find(e => e.type === 'backplate');
+    assert.ok(plate.fillOpacity >= .75);
+    assert.equal(plate.fill, '#000000');
+    assert.equal(lyrics.palette.color, '#ffffff');
+    assert.ok(lyrics.style.shadowOpacity >= .75);
     close(artwork.rect.w * 1280, artwork.rect.h * height);
     for (const item of layout.items) {
       const { x, y, w, h } = item.rect;
@@ -110,6 +122,7 @@ for (const aspect of ASPECTS) {
       stage.height = Math.round(stage.width * ratio[1] / ratio[0]);
       const renderer = new VisualizerRenderer(stage);
       const item = layouts[aspect].items.find(i => i.type === 'lyrics');
+      const plate = item.effects.find(e => e.type === 'backplate');
       const layout = { ...layouts[aspect], items: [item] };
       const sources = { getModulators: () => ({}), getFrame: () => null };
       const synced = { data: { synced: true, lines: [
@@ -123,7 +136,7 @@ for (const aspect of ASPECTS) {
         const composite = state.fadeLayer, mask = state.fadeMask;
         assert.ok(events.some(e => e.kind === 'image' && e.canvas === composite && e.image === mask && e.operation === 'destination-in'),
           'the real renderer applies its edge mask after composing text and backplate');
-        assert.ok(events.some(e => e.kind === 'backplate' && e.canvas === composite && e.alpha === .45));
+        assert.ok(events.some(e => e.kind === 'backplate' && e.canvas === composite && e.alpha === plate.fillOpacity));
         const alphaAt = mask.getContext('2d').alphaSampler();
         const width = mask.width, height = mask.height;
         const rows = events.filter(e => e.kind === 'text' && e.canvas === state.canvas);
@@ -191,7 +204,7 @@ for (const aspect of ASPECTS) {
         close(moved.y - entering.y, -.01 / unsynced.duration * 8 * lineAdvance);
       }
 
-      // The same composite mask softens the 45% backplate, including during
+      // The same composite mask softens the dark backplate, including during
       // temporal playback fades. No detached dark strip remains at the edge.
       const fading = draw({ ...synced, time: .5 });
       assert.ok(events.some(e => e.kind === 'image' && e.canvas === stage && e.image === fading.composite && e.alpha === .5));
@@ -205,7 +218,27 @@ for (const aspect of ASPECTS) {
         lineAdvance, block: rowHeight + lineAdvance, boxHeight: syncedFrame.height, zone,
         fraction: fade.top, syncedRowAlpha: [1, 1], edgeCenteredRowMax: edgeRowMaxima,
         halfZoneRowCenterAlpha: [.5, .5], edgeAlpha: 0,
-        backplateAlpha: { center: .45, halfZone: .225, edge: 0 } }));
+        backplateAlpha: { center: plate.fillOpacity, halfZone: plate.fillOpacity / 2, edge: 0 } }));
+      // Rough worst-case contrast in the opaque middle band over a full-height
+      // bar. Use the renderer's actual palette sampling and normal sRGB blending.
+      const hex = value => [1, 3, 5].map(i => parseInt(value.slice(i, i + 2), 16));
+      const over = (fg, bg, alpha) => fg.map((v, i) => v * alpha + bg[i] * (1 - alpha));
+      const luminance = rgb => rgb.map(v => {
+        const c = v / 255;
+        return c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4;
+      }).reduce((sum, v, i) => sum + v * [.2126, .7152, .0722][i], 0);
+      const spectrum = layouts[aspect].items.find(i => i.type === 'spectrum');
+      const spectrumPlate = spectrum.effects.find(e => e.type === 'backplate');
+      const spectrumOpacity = spectrum.effects.find(e => e.type === 'opacity').amount;
+      const base = over(hex(spectrumPlate.fill), hex(layout.background.color), spectrumPlate.fillOpacity);
+      const bandLuminance = Math.max(...Array.from({ length: 257 }, (_, i) => {
+        const rgb = paletteColor(spectrum.palette, i / 256).match(/[\d.]+/g).map(Number);
+        return luminance(over(hex(plate.fill), over(rgb, base, spectrumOpacity), plate.fillOpacity));
+      }));
+      const textLuminance = luminance(hex(item.palette.color));
+      const contrast = (textLuminance + .05) / (bandLuminance + .05);
+      assert.ok(bandLuminance < .05 && contrast > 10);
+      t.diagnostic(JSON.stringify({ aspect, textLuminance, brightestBandLuminance: bandLuminance, contrast }));
       renderer.dispose();
     });
   });

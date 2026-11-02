@@ -13,6 +13,86 @@ const assets = path.resolve(process.argv[assetsIndex + 1]);
 const assetText = relative => readFile(path.join(assets, relative), 'utf8');
 const assetModule = relative => import(pathToFileURL(path.join(assets, relative)).href);
 
+test('VST lifecycle recovery never acquires a browser microphone on focus or interaction', async () => {
+  const upstream = await readFile(new URL('../../external/effetune/js/app.js', import.meta.url), 'utf8');
+  const staged = await assetText('js/app.js');
+  const previous = { window: globalThis.window, document: globalThis.document,
+    navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator') };
+  const target = () => ({
+    listeners: new Map(),
+    addEventListener(type, listener) {
+      const listeners = this.listeners.get(type) || [];
+      listeners.push(listener); this.listeners.set(type, listeners);
+    },
+    removeEventListener() {},
+    fire(type, event = {}) { for (const listener of this.listeners.get(type) || []) listener(event); }
+  });
+  try {
+    for (const legacy of [true, false]) {
+      let captures = 0, flushed = 0, pending = Promise.resolve();
+      const document = Object.assign(target(), { hidden: false, querySelector: () => null });
+      const navigator = { mediaDevices: {
+        addEventListener() {},
+        getUserMedia() {
+          captures++;
+          return Promise.reject(Object.assign(new Error('No real device in this test'), { name: 'NotAllowedError' }));
+        }
+      } };
+      const window = Object.assign(target(), { document, navigator, location: { search: '' },
+        sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+        audioPreferences: {}, electronAPI: { onIPC() {} },
+        __effetuneHostCall: async () => ({ engineSampleRate: 48000, channels: 2 }) });
+      Object.assign(globalThis, { window, document });
+      Object.defineProperty(globalThis, 'navigator', { value: navigator, configurable: true });
+      const { AudioManager } = await assetModule('vst-audio-manager.js');
+      const manager = new AudioManager();
+      clearInterval(manager.telemetryTimer);
+      assert.equal(await manager.initAudio(), '');
+      const policy = manager.powerPolicyController;
+      assert.equal(policy.enabled, false, 'staged browser power control is disabled for host audio');
+      if (legacy) policy.enabled = true; // Reproduce the pre-adaptation capability-rich WebView.
+      // Keep the real route classification, ensureActive, input acquisition and
+      // getUserMedia. Stop before a browser DSP recovery transaction can run.
+      policy.beginUserGestureResume = kind => {
+        const operation = { phase: 'collecting', requestedKinds: new Set(), resourceVersion: 0 };
+        policy._extendGestureResumeOperation(operation, kind);
+        pending = operation.inputPromise?.catch(() => {}) || Promise.resolve();
+        return pending;
+      };
+      const method = (legacy ? upstream : staged).match(/    setupEventListeners\(\) \{[\s\S]*?\n    \}/)?.[0];
+      assert.ok(method);
+      const context = { window, document, navigator, console };
+      vm.runInNewContext(`this.App = class { ${method} };`, context);
+      const app = new context.App();
+      app.audioManager = manager;
+      app.uiManager = { flushPipelineStateToLocalStorage() { flushed++; }, setError() {} };
+      app.setupEventListeners();
+      window.fire('focus');
+      await pending;
+      if (legacy) {
+        assert.equal(captures, 1, 'original focus hook reaches beginReacquireAudioInput -> getUserMedia');
+      } else {
+        window.fire('pageshow');
+        document.fire('visibilitychange');
+        document.fire('pointerdown', { pointerType: 'mouse' });
+        document.fire('keydown', { key: 'A' });
+        await pending;
+        assert.equal(captures, 0);
+        document.hidden = true;
+        document.fire('visibilitychange');
+        window.fire('pagehide');
+        assert.equal(flushed, 2, 'saved pipeline flushing remains on hide/pagehide');
+      }
+      policy.dispose();
+    }
+  } finally {
+    globalThis.window = previous.window;
+    globalThis.document = previous.document;
+    if (previous.navigator) Object.defineProperty(globalThis, 'navigator', previous.navigator);
+    else delete globalThis.navigator;
+  }
+});
+
 test('shared history snapshots and restoration retain native logical plugin IDs', async () => {
   const { HistoryManager } = await assetModule('js/ui/pipeline/history-manager.js');
   const previousWindow = globalThis.window;
