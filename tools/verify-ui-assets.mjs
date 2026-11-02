@@ -420,6 +420,10 @@ if (!visualizerView.includes('return this.uiManager.audioManager.getHostLyrics()
     !audioAdapter.includes('selectLyrics({')) {
   throw new Error('The host lyrics provider is missing');
 }
+if (!visualizerView.includes('lyricsSeekTime() {\n        return null;\n    }') ||
+    visualizerView.includes('this.renderer.lyricsSeekTime(')) {
+  throw new Error('Receive-only host lyrics must not offer a seek action');
+}
 for (const file of await readdir(path.join(assets, 'presets', 'visualizer'))) {
   if (!file.endsWith('.json')) continue;
   const bundled = JSON.parse(await readFile(path.join(assets, 'presets', 'visualizer', file), 'utf8'));

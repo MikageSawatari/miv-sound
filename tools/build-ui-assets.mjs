@@ -425,6 +425,13 @@ const playerLyrics = `    lyrics() {
 visualizerView = replaceOnce(visualizerView, playerLyrics, `    lyrics() {
         return this.uiManager.audioManager.getHostLyrics();
     }`);
+// Host lyrics are receive-only; do not offer the built-in player's seek action.
+const lyricsSeekProvider = /    \/\/ Click-to-seek[^\n]*\n    lyricsSeekTime\(event\) \{[\s\S]*?\n    \}\n(?=    seekToLyrics)/;
+visualizerView = replaceOnce(visualizerView, lyricsSeekProvider, `    // Host lyrics do not expose a seek action.
+    lyricsSeekTime() {
+        return null;
+    }
+`);
 // mIV's project sample count is not the audible media position. Imported
 // counters retain their type and editor, but receive no position until a media clock is available.
 const counterProvider = /    counters\(now = performance\.now\(\)\) \{[\s\S]*?\n    \}\n(?=    resetCounter)/;

@@ -372,6 +372,122 @@ void testPlaybackPosition() {
   expect(!readSnapshot(*processor)["playback"].hasObjectMember("mediaGeneration"), "termination clears position");
 }
 
+void testZeroPositionAndGeneration() {
+  using effetune::vst::plugin::PluginProcessorTestAccess;
+  auto processor = makeProcessor();
+  auto metadata = makeMessage();
+  metadata->getAttributes()->setInt("mediaGeneration", 0);
+  metadata->getAttributes()->setFloat("durationSeconds", 0.0);
+  expect(processor->notify(metadata.get()) == kResultOk, "accept zero metadata generation and duration");
+
+  auto message = makeMessage("EffeTune.PlaybackPosition");
+  auto *attributes = message->getAttributes();
+  attributes->setInt("mediaGeneration", 0);
+  attributes->setInt("available", 1);
+  attributes->setInt("playing", 0);
+  attributes->setFloat("positionSeconds", 0.0);
+  attributes->setFloat("rate", 1.0);
+  attributes->setInt("hostTimeNanoseconds", 0);
+  expect(processor->notify(message.get()) == kResultOk, "accept zero position, generation and host time");
+  for (const auto *route : {"host/getInfo", "telemetry/read"}) {
+    const auto snapshot = readSnapshot(*processor, route);
+    expect(snapshot["nowPlaying"]["mediaGeneration"].get<std::string>() == "0" &&
+               snapshot["nowPlaying"]["durationSeconds"].get<double>() == 0.0 &&
+               snapshot["playback"]["mediaGeneration"].get<std::string>() == "0" &&
+               snapshot["playback"]["available"].get<int>() == 1 &&
+               snapshot["playback"]["positionSeconds"].get<double>() == 0.0,
+           "both routes retain zero values rather than treating them as omitted");
+  }
+  attributes->setInt("playing", 1);
+  expect(processor->notify(message.get()) == kResultOk, "accept advancing position at zero");
+  expect(PluginProcessorTestAccess::playbackAt(*processor, 1000000000)["positionSeconds"].get<double>() == 1.0,
+         "zero position and host time are valid extrapolation origins");
+  expect(processor->terminate() == kResultOk, "terminate zero boundary processor");
+}
+
+void testHighBitGenerationAndRepeatedNotifications() {
+  using effetune::vst::plugin::PluginProcessorTestAccess;
+  auto processor = makeProcessor();
+  constexpr auto generation = std::numeric_limits<int64>::min();
+  constexpr auto generationText = "9223372036854775808";
+  auto metadata = makeMessage();
+  metadata->getAttributes()->setInt("mediaGeneration", generation);
+  metadata->getAttributes()->setString("lyricsSidecar", STR16("[00:00.00]First"));
+  expect(processor->notify(metadata.get()) == kResultOk, "accept the high generation bit in metadata");
+  const auto first = readSnapshot(*processor);
+  expect(first["nowPlaying"]["mediaGeneration"].get<std::string>() == generationText,
+         "metadata preserves the high bit as an unsigned decimal string");
+  metadata->getAttributes()->setString("lyricsSidecar", STR16("[00:00.00]Updated"));
+  expect(processor->notify(metadata.get()) == kResultOk, "accept updated lyrics for the same generation");
+  const auto updated = readSnapshot(*processor, "telemetry/read", revisionOf(first));
+  expect(revisionOf(updated) > revisionOf(first) &&
+             updated["nowPlaying"]["mediaGeneration"].get<std::string>() == generationText &&
+             updated["nowPlaying"]["lyricsSidecar"].get<std::string>() == "[00:00.00]Updated",
+         "same-generation metadata is republished with its new revision");
+  expect(processor->notify(metadata.get()) == kResultOk, "accept an identical metadata notification");
+  const auto repeated = readSnapshot(*processor, "telemetry/read", revisionOf(updated));
+  expect(revisionOf(repeated) > revisionOf(updated) &&
+             choc::json::toString(repeated["nowPlaying"]) == choc::json::toString(updated["nowPlaying"]),
+         "identical metadata is republished without losing its generation or lyrics");
+
+  auto message = makeMessage("EffeTune.PlaybackPosition");
+  auto *attributes = message->getAttributes();
+  attributes->setInt("mediaGeneration", generation);
+  attributes->setInt("available", 1);
+  attributes->setInt("playing", 0);
+  attributes->setFloat("positionSeconds", 10.0);
+  attributes->setFloat("rate", 1.0);
+  attributes->setInt("hostTimeNanoseconds", 0);
+  expect(processor->notify(message.get()) == kResultOk, "accept the high generation bit in playback");
+  expect(PluginProcessorTestAccess::playbackAt(*processor, 0)["mediaGeneration"].get<std::string>() == generationText,
+         "playback preserves the high generation bit too");
+  attributes->setFloat("positionSeconds", 3.0);
+  attributes->setFloat("rate", 0.5);
+  expect(processor->notify(message.get()) == kResultOk, "accept a seek within the same generation");
+  const auto playback = PluginProcessorTestAccess::playbackAt(*processor, 0);
+  expect(playback["mediaGeneration"].get<std::string>() == generationText &&
+             playback["positionSeconds"].get<double>() == 3.0 && playback["rate"].get<double>() == 0.5,
+         "same-generation playback replaces position and rate");
+  expect(processor->notify(message.get()) == kResultOk, "accept an identical playback notification");
+  expect(choc::json::toString(PluginProcessorTestAccess::playbackAt(*processor, 0)) ==
+             choc::json::toString(playback), "identical notification preserves the complete position");
+  expect(processor->terminate() == kResultOk, "terminate high-bit generation processor");
+}
+
+void testPlaybackExtrapolationBounds() {
+  using effetune::vst::plugin::PluginProcessorTestAccess;
+  auto processor = makeProcessor();
+  auto message = makeMessage("EffeTune.PlaybackPosition");
+  auto *attributes = message->getAttributes();
+  attributes->setInt("mediaGeneration", 1);
+  attributes->setInt("available", 1);
+  attributes->setInt("playing", 1);
+  attributes->setFloat("positionSeconds", 1.0);
+  attributes->setFloat("rate", 2.0);
+  attributes->setInt("hostTimeNanoseconds", 2000000000);
+  expect(processor->notify(message.get()) == kResultOk, "accept a position ahead of the response clock");
+  expect(PluginProcessorTestAccess::playbackAt(*processor, 1750000000)["positionSeconds"].get<double>() == 0.5,
+         "negative elapsed time extrapolates backwards while position remains positive");
+  expect(PluginProcessorTestAccess::playbackAt(*processor, 1500000000)["positionSeconds"].get<double>() == 0.0 &&
+             PluginProcessorTestAccess::playbackAt(*processor, 1000000000)["positionSeconds"].get<double>() == 0.0,
+         "backwards extrapolation clamps at zero and below zero");
+
+  constexpr auto maximum = std::numeric_limits<double>::max();
+  attributes->setFloat("positionSeconds", maximum);
+  attributes->setFloat("rate", maximum);
+  attributes->setInt("hostTimeNanoseconds", 0);
+  expect(processor->notify(message.get()) == kResultOk, "accept finite maximum position and rate");
+  expect(PluginProcessorTestAccess::playbackAt(*processor, 2000000000)["positionSeconds"].get<double>() == maximum,
+         "overflowing extrapolation saturates at the largest finite double");
+  for (const auto *route : {"host/getInfo", "telemetry/read"}) {
+    const auto snapshot = readSnapshot(*processor, route);
+    const auto position = snapshot["playback"]["positionSeconds"].get<double>();
+    expect(std::isfinite(position) && position == maximum,
+           "both JSON routes preserve a finite saturated position");
+  }
+  expect(processor->terminate() == kResultOk, "terminate extrapolation boundary processor");
+}
+
 } // namespace
 
 int runTestBody() {
@@ -387,6 +503,12 @@ int runTestBody() {
     testHostLyricsMetadata();
     effetune::vst::testing::checkWebViewTestDeadline();
     testPlaybackPosition();
+    effetune::vst::testing::checkWebViewTestDeadline();
+    testZeroPositionAndGeneration();
+    effetune::vst::testing::checkWebViewTestDeadline();
+    testHighBitGenerationAndRepeatedNotifications();
+    effetune::vst::testing::checkWebViewTestDeadline();
+    testPlaybackExtrapolationBounds();
     std::cout << "EffeTune Now Playing metadata tests passed\n";
     return 0;
   } catch (const std::exception &error) {

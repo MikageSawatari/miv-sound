@@ -208,6 +208,38 @@ test('bundled Visualizer host lyrics keep upstream Offset and fade inputs', asyn
   assert.equal(VisualizerView.prototype.lyrics.call(view), null);
 });
 
+test('host lyrics never offer seeking even when the renderer reports a timed lyric hit', async () => {
+  const { VisualizerView } = await assetModule('js/visualizer/visualizer-view.js');
+  const source = await assetText('js/visualizer/visualizer-view.js');
+  const pointerBinding = source.match(/        this\.stage\.addEventListener\('pointermove', event => \{[\s\S]*?\n        \}\);/)?.[0];
+  assert.ok(pointerBinding, 'the production stage pointer handler is present');
+  const classes = new Set(['lyrics-seekable']);
+  const listeners = new Map();
+  let seeks = 0;
+  const view = Object.assign(Object.create(VisualizerView.prototype), {
+    hasLyrics: true, editor: { open: false }, layout: { items: [{ type: 'lyrics' }] },
+    canvas: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }) },
+    renderer: { lyricsSeekTime: () => 12.5, counterAt: () => null },
+    stage: {
+      addEventListener: (name, listener) => listeners.set(name, listener),
+      classList: { toggle(name, enabled) { if (enabled) classes.add(name); else classes.delete(name); } }
+    },
+    showControls() {},
+    uiManager: { audioPlayer: {
+      stateManager: { getStateSnapshot: () => ({ seekBarEnabled: true }) },
+      contextManager: { seek() { seeks++; } }
+    } }
+  });
+  const event = { clientX: 50, clientY: 50, target: { closest: () => null } };
+  assert.equal(view.renderer.lyricsSeekTime(view.layout, 0.5, 0.5), 12.5);
+  assert.equal(view.lyricsSeekTime(event), null);
+  vm.runInNewContext(`(function () { ${pointerBinding} }).call(view);`, { view });
+  listeners.get('pointermove')(event);
+  assert.equal(classes.has('lyrics-seekable'), false, 'hover removes the seek cursor affordance');
+  view.seekToLyrics(event);
+  assert.equal(seeks, 0, 'click cannot seek even if a player happens to be present');
+});
+
 test('imported Counter layouts receive no misleading project position', async () => {
   const { VisualizerView } = await assetModule('js/visualizer/visualizer-view.js');
   const { normalizeLayout, snapshotLayout, encodeLayoutShare, decodeLayoutShare } =
