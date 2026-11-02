@@ -388,12 +388,20 @@ EffeTuneProcessor::EffeTuneProcessor()
   preserveMissingPipelineA_ = true;
   preserveMissingPipelineB_ = true;
 #endif
+  // Construction must remain read-only: initialize rechecks storage before
+  // deciding whether this is a first run and persisting its default.
+  loadUiConfig(false);
+}
+
+void EffeTuneProcessor::loadUiConfig(const bool persistFirstRun) {
   std::string config;
   std::string configError;
-  if (configStore_.loadForStartup(config, &configError)) {
+  if (persistFirstRun ? configStore_.loadForStartup(config, &configError)
+                     : configStore_.load(config, &configError)) {
     try {
       const auto parsed = choc::json::parse(config);
       if (parsed.isObject()) {
+        std::scoped_lock stateLock(stateMutex_);
         configJson_ = std::move(config);
         const auto columns = parsed["columns"].getWithDefault<std::int64_t>(1);
         if (columns >= 1 && columns <= 8) {
@@ -451,19 +459,6 @@ tresult PLUGIN_API EffeTuneProcessor::initialize(FUnknown *context) {
     return kResultFalse;
   }
   synchronizeAutomationBindings(false);
-  // The UI also owns the canonical JS parameter packers. Keep it alive while
-  // the editor is closed so project state can rebuild a playable pipeline.
-  try {
-    auto webView = std::make_shared<WebViewHost>(
-        [this](const std::string_view message) { return handleUiMessage(message); });
-    std::scoped_lock editorLock(editorMutex_);
-    editorTerminating_ = false;
-    webView_ = std::move(webView);
-  } catch (const std::exception &) {
-    // A missing WebView runtime must not prevent the audio component loading;
-    // attachEditor() retries and the processor continues with its current DSP.
-    webView_.reset();
-  }
   try {
     choc::messageloop::initialise();
     controlServiceTimer_ = std::make_unique<ControlServiceTimer>();
@@ -491,6 +486,26 @@ tresult PLUGIN_API EffeTuneProcessor::initialize(FUnknown *context) {
     controlServiceTimer_.reset();
     return kResultFalse;
   }
+  // All startup rejection paths are above. Decide first run before WebView2
+  // can create its profile, and publish the same config to config/load.
+  loadUiConfig(true);
+  // The UI also owns the canonical JS parameter packers. Keep it alive while
+  // the editor is closed so project state can rebuild a playable pipeline.
+  try {
+    auto webView = std::make_shared<WebViewHost>(
+        [this](const std::string_view message) { return handleUiMessage(message); });
+    std::scoped_lock editorLock(editorMutex_);
+    webView_ = std::move(webView);
+  } catch (const std::exception &) {
+    // A missing WebView runtime must not prevent the audio component loading;
+    // attachEditor() retries and the processor continues with its current DSP.
+    webView_.reset();
+  }
+  {
+    std::scoped_lock editorLock(editorMutex_);
+    editorTerminating_ = false;
+    editorInitialized_ = true;
+  }
   return kResultOk;
 }
 
@@ -507,6 +522,7 @@ tresult PLUGIN_API EffeTuneProcessor::terminate() {
   std::shared_ptr<WebViewHost> retiredWebView;
   {
     std::scoped_lock editorLock(editorMutex_);
+    editorInitialized_ = false;
     editorTerminating_ = true;
     retiredWebView = std::move(webView_);
   }
@@ -3985,6 +4001,8 @@ tresult PLUGIN_API EffeTuneProcessor::setAutomationState(const int32 state) {
 }
 
 IPlugView *PLUGIN_API EffeTuneProcessor::createView(const FIDString name) {
+  std::scoped_lock editorLock(editorMutex_);
+  if (!editorInitialized_ || editorTerminating_) return nullptr;
   if (name != nullptr && std::strcmp(name, ViewType::kEditor) == 0) {
     return EffeTuneView::create(this);
   }
@@ -3998,7 +4016,7 @@ bool EffeTuneProcessor::attachEditor(void *owner, void *parent,
   try {
     {
       std::scoped_lock editorLock(editorMutex_);
-      if (editorTerminating_) {
+      if (!editorInitialized_ || editorTerminating_) {
         return false;
       }
       webView = webView_;
@@ -4009,7 +4027,7 @@ bool EffeTuneProcessor::attachEditor(void *owner, void *parent,
             return handleUiMessage(message);
           });
       std::scoped_lock editorLock(editorMutex_);
-      if (!editorTerminating_ && webView_ == nullptr) {
+      if (editorInitialized_ && !editorTerminating_ && webView_ == nullptr) {
         webView_ = created;
       }
       webView = webView_;

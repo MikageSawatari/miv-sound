@@ -130,6 +130,25 @@ add_test(NAME effetune_json_storage_compatibility_tests
 set_tests_properties(effetune_json_storage_compatibility_tests PROPERTIES TIMEOUT 120)
 
 if(WIN32 AND TARGET effetune_plugin)
+  # Link a WebViewHost double, never the WebView2 implementation or product DLL.
+  add_executable(miv_processor_startup_tests
+    unit/processor_startup_tests.cpp
+    ${vst3sdk_SOURCE_DIR}/public.sdk/source/vst/vstsinglecomponenteffect.cpp
+    ${PROJECT_SOURCE_DIR}/src/plugin/automation_parameters.cpp
+    ${PROJECT_SOURCE_DIR}/src/plugin/external_url.cpp
+    ${PROJECT_SOURCE_DIR}/src/plugin/native_file_dialog.cpp
+    ${PROJECT_SOURCE_DIR}/src/plugin/plugin_processor.cpp
+    ${PROJECT_SOURCE_DIR}/src/plugin/plugin_view.cpp)
+  target_link_libraries(miv_processor_startup_tests PRIVATE
+    sdk effetune_engine user32 ole32 shell32 shlwapi)
+  target_include_directories(miv_processor_startup_tests PRIVATE
+    ${PROJECT_SOURCE_DIR}/src
+    ${EFFETUNE_UPSTREAM_SOURCE_DIR}/dsp/core)
+  target_compile_features(miv_processor_startup_tests PRIVATE cxx_std_20)
+  target_compile_options(miv_processor_startup_tests PRIVATE /W4 /WX /utf-8)
+  add_test(NAME miv_processor_startup_tests COMMAND miv_processor_startup_tests)
+  set_tests_properties(miv_processor_startup_tests PROPERTIES TIMEOUT 120)
+
   add_executable(effetune_webview_test_lifetime_tests unit/webview_test_lifetime_tests.cpp)
   target_compile_features(effetune_webview_test_lifetime_tests PRIVATE cxx_std_20)
   target_compile_options(effetune_webview_test_lifetime_tests PRIVATE /W4 /WX /utf-8)

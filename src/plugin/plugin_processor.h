@@ -121,6 +121,8 @@ public:
 private:
   friend class PluginProcessorTestAccess;
 
+  void loadUiConfig(bool persistFirstRun);
+
   // Defined below, once the touch bookkeeping it carries has been declared.
   // Every path that can retire an automation slot holds
   // processingResourcesMutex_ through this and through nothing else.
@@ -896,6 +898,9 @@ private:
   std::mutex editorMutex_;
   std::mutex assetTransferMutex_;
   std::shared_ptr<WebViewHost> webView_;
+  // Guarded by editorMutex_; editor entry points refuse access until initialize
+  // has completed every fallible setup step and applied the startup config.
+  bool editorInitialized_ = false;
   bool editorTerminating_ = false;
   std::mutex presetExchangeMutex_;
   std::optional<std::string> readablePresetPath_;

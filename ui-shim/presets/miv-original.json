@@ -382,9 +382,9 @@
         "type": "lyrics",
         "rect": {
           "x": 0.435,
-          "y": 0.8,
+          "y": 0.7136111111111112,
           "w": 0.5325,
-          "h": 0.14
+          "h": 0.2263888888888889
         },
         "channel": null,
         "flipX": false,
@@ -409,7 +409,7 @@
           "lyricsMotion": "step",
           "lyricsStepDuration": 0.4,
           "lyricsPosition": 50,
-          "lyricsLineSpacing": 1.5,
+          "lyricsLineSpacing": 1.25,
           "lyricsWordFill": true,
           "lyricsOffset": 0,
           "lyricsFadeIn": 1,
@@ -439,6 +439,34 @@
             "borderWidth": 0,
             "radius": 16,
             "margin": 5,
+            "palette": {
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#40dfff"
+                }
+              ],
+              "motion": {
+                "mode": "none",
+                "speed": 0.25
+              }
+            },
+            "mod": {
+              "source": "none",
+              "depth": 0,
+              "speed": 1
+            }
+          },
+          {
+            "type": "edge-fade",
+            "enabled": true,
+            "amount": 1,
+            "shape": "rectangle",
+            "top": 0.23190184049079757,
+            "bottom": 0.23190184049079757,
+            "left": 0,
+            "right": 0,
+            "circleWidth": 0.2,
             "palette": {
               "stops": [
                 {
@@ -844,9 +872,9 @@
         "type": "lyrics",
         "rect": {
           "x": 0.555,
-          "y": 0.78,
+          "y": 0.6857291666666667,
           "w": 0.42,
-          "h": 0.15
+          "h": 0.24427083333333335
         },
         "channel": null,
         "flipX": false,
@@ -871,7 +899,7 @@
           "lyricsMotion": "step",
           "lyricsStepDuration": 0.4,
           "lyricsPosition": 50,
-          "lyricsLineSpacing": 1.5,
+          "lyricsLineSpacing": 1.25,
           "lyricsWordFill": true,
           "lyricsOffset": 0,
           "lyricsFadeIn": 1,
@@ -901,6 +929,34 @@
             "borderWidth": 0,
             "radius": 12,
             "margin": 4,
+            "palette": {
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#40dfff"
+                }
+              ],
+              "motion": {
+                "mode": "none",
+                "speed": 0.25
+              }
+            },
+            "mod": {
+              "source": "none",
+              "depth": 0,
+              "speed": 1
+            }
+          },
+          {
+            "type": "edge-fade",
+            "enabled": true,
+            "amount": 1,
+            "shape": "rectangle",
+            "top": 0.23027718550106607,
+            "bottom": 0.23027718550106607,
+            "left": 0,
+            "right": 0,
+            "circleWidth": 0.2,
             "palette": {
               "stops": [
                 {
@@ -1306,9 +1362,9 @@
         "type": "lyrics",
         "rect": {
           "x": 0.47,
-          "y": 0.8,
+          "y": 0.7139583333333334,
           "w": 0.49,
-          "h": 0.14
+          "h": 0.22604166666666667
         },
         "channel": null,
         "flipX": false,
@@ -1333,7 +1389,7 @@
           "lyricsMotion": "step",
           "lyricsStepDuration": 0.4,
           "lyricsPosition": 50,
-          "lyricsLineSpacing": 1.5,
+          "lyricsLineSpacing": 1.25,
           "lyricsWordFill": true,
           "lyricsOffset": 0,
           "lyricsFadeIn": 1,
@@ -1363,6 +1419,34 @@
             "borderWidth": 0,
             "radius": 21,
             "margin": 6,
+            "palette": {
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#40dfff"
+                }
+              ],
+              "motion": {
+                "mode": "none",
+                "speed": 0.25
+              }
+            },
+            "mod": {
+              "source": "none",
+              "depth": 0,
+              "speed": 1
+            }
+          },
+          {
+            "type": "edge-fade",
+            "enabled": true,
+            "amount": 1,
+            "shape": "rectangle",
+            "top": 0.23225806451612901,
+            "bottom": 0.23225806451612901,
+            "left": 0,
+            "right": 0,
+            "circleWidth": 0.2,
             "palette": {
               "stops": [
                 {
@@ -1768,9 +1852,9 @@
         "type": "lyrics",
         "rect": {
           "x": 0.49,
-          "y": 0.8,
+          "y": 0.7150000000000001,
           "w": 0.47,
-          "h": 0.14
+          "h": 0.225
         },
         "channel": null,
         "flipX": false,
@@ -1795,7 +1879,7 @@
           "lyricsMotion": "step",
           "lyricsStepDuration": 0.4,
           "lyricsPosition": 50,
-          "lyricsLineSpacing": 1.5,
+          "lyricsLineSpacing": 1.25,
           "lyricsWordFill": true,
           "lyricsOffset": 0,
           "lyricsFadeIn": 1,
@@ -1825,6 +1909,34 @@
             "borderWidth": 0,
             "radius": 28,
             "margin": 9,
+            "palette": {
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#40dfff"
+                }
+              ],
+              "motion": {
+                "mode": "none",
+                "speed": 0.25
+              }
+            },
+            "mod": {
+              "source": "none",
+              "depth": 0,
+              "speed": 1
+            }
+          },
+          {
+            "type": "edge-fade",
+            "enabled": true,
+            "amount": 1,
+            "shape": "rectangle",
+            "top": 0.23333333333333334,
+            "bottom": 0.23333333333333334,
+            "left": 0,
+            "right": 0,
+            "circleWidth": 0.2,
             "palette": {
               "stops": [
                 {
@@ -2230,9 +2342,9 @@
         "type": "lyrics",
         "rect": {
           "x": 0.05,
-          "y": 0.55,
+          "y": 0.516455078125,
           "w": 0.9,
-          "h": 0.075
+          "h": 0.10854492187499999
         },
         "channel": null,
         "flipX": false,
@@ -2257,14 +2369,14 @@
           "lyricsMotion": "step",
           "lyricsStepDuration": 0.4,
           "lyricsPosition": 50,
-          "lyricsLineSpacing": 1.5,
+          "lyricsLineSpacing": 1.25,
           "lyricsWordFill": true,
           "lyricsOffset": 0,
           "lyricsFadeIn": 1,
           "lyricsFadeOut": 3
         },
         "style": {
-          "fontSize": 53.33333333333333,
+          "fontSize": 48,
           "fontFamily": "system-ui",
           "bold": true,
           "italic": false,
@@ -2287,6 +2399,34 @@
             "borderWidth": 0,
             "radius": 28,
             "margin": 9,
+            "palette": {
+              "stops": [
+                {
+                  "pos": 0,
+                  "color": "#40dfff"
+                }
+              ],
+              "motion": {
+                "mode": "none",
+                "speed": 0.25
+              }
+            },
+            "mod": {
+              "source": "none",
+              "depth": 0,
+              "speed": 1
+            }
+          },
+          {
+            "type": "edge-fade",
+            "enabled": true,
+            "amount": 1,
+            "shape": "rectangle",
+            "top": 0.2331983805668016,
+            "bottom": 0.2331983805668016,
+            "left": 0,
+            "right": 0,
+            "circleWidth": 0.2,
             "palette": {
               "stops": [
                 {

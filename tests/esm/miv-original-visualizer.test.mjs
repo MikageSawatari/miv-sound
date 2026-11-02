@@ -1,14 +1,17 @@
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { ASPECTS, ASPECT_FILES, normalizeLayout, layoutsEqual, validateLayout }
+import { ASPECTS, ASPECT_FILES, MAX_EFFECTS, normalizeLayout, layoutsEqual, validateLayout }
   from '../../external/effetune/js/visualizer/visualizer-model.js';
 import { TEXT_LINE_HEIGHT } from '../../external/effetune/js/visualizer/visualizer-text.js';
 import { lyricsFrame, lyricsOpacity } from '../../external/effetune/js/visualizer/visualizer-lyrics.js';
 import { VisualizerRenderer } from '../../external/effetune/js/visualizer/visualizer-renderer.js';
+import { withRecordingCanvas } from './helpers/visualizer-recording-canvas.mjs';
 
 const layouts = JSON.parse(await readFile(new URL('../../ui-shim/presets/miv-original.json', import.meta.url), 'utf8'));
 const close = (a, b) => assert.ok(Math.abs(a - b) < 1e-10, `${a} != ${b}`);
+const captionBottoms = { '16:9': .94, '21:9': .93, '4:3': .94, '1:1': .94, '9:16': .625 };
+const captionFonts = { '16:9': 31.5, '21:9': 180 / 7, '4:3': 42, '1:1': 56, '9:16': 48 };
 
 test('mIV Original covers exactly the upstream aspect strings', () => {
   assert.deepEqual(Object.keys(layouts).sort(), [...ASPECTS].sort());
@@ -58,14 +61,38 @@ for (const aspect of ASPECTS) {
     assert.ok(lyrics.rect.x >= spectrum.rect.x && lyrics.rect.y >= spectrum.rect.y);
     assert.ok(lyrics.rect.x + lyrics.rect.w <= spectrum.rect.x + spectrum.rect.w);
     assert.ok(lyrics.rect.y + lyrics.rect.h <= spectrum.rect.y + spectrum.rect.h);
+    close(lyrics.rect.y + lyrics.rect.h, captionBottoms[aspect]);
+    for (const item of [artwork, title, artist, album]) {
+      assert.equal(overlaps(lyrics.rect, item.rect), false, `caption overlaps ${item.id}`);
+    }
     assert.equal(lyrics.params.lyricsView, 'line');
     assert.equal(lyrics.params.lyricsNext, true);
+    assert.equal(lyrics.params.lyricsMotion, 'step');
+    assert.equal(lyrics.params.lyricsStepDuration, .4);
     assert.equal(lyrics.params.lyricsWordFill, true);
     assert.equal(lyrics.params.lyricsFadeIn, 1);
     assert.equal(lyrics.params.lyricsFadeOut, 3);
     assert.equal(lyrics.style.align, 'center');
-    // Two rows fit with space for the shadow: row + one line advance.
-    assert.ok(lyrics.style.fontSize * TEXT_LINE_HEIGHT * (1 + lyrics.params.lyricsLineSpacing) < lyrics.rect.h * height);
+    close(lyrics.style.fontSize, captionFonts[aspect]);
+    for (const item of layout.items) assert.ok(item.effects.length <= MAX_EFFECTS);
+    const fades = lyrics.effects.filter(effect => effect.type === 'edge-fade');
+    assert.equal(fades.length, 1);
+    const fade = fades[0];
+    assert.equal(fade.enabled, true);
+    assert.equal(fade.amount, 1);
+    assert.equal(fade.shape, 'rectangle');
+    assert.equal(lyrics.params.lyricsLineSpacing, 1.25);
+    close(fade.top, fade.bottom);
+    assert.equal(fade.left, 0);
+    assert.equal(fade.right, 0);
+    const rowHeight = lyrics.style.fontSize * TEXT_LINE_HEIGHT;
+    const block = rowHeight * (1 + lyrics.params.lyricsLineSpacing);
+    const boxHeight = lyrics.rect.h * height, zone = boxHeight * fade.top;
+    // A row centered on the box edge has half a row visible. A linear ramp
+    // needs a full row of fade width to keep that entire half at <= 50% alpha.
+    close(zone, rowHeight);
+    assert.ok(boxHeight - block - 2 * zone >= 2 - 1e-10, 'leave at least two pixels of slack');
+    assert.ok(boxHeight - block - 2 * zone < 3 + 1e-10, 'keep caption compact after rounding up');
     assert.equal(lyricsOpacity(lyrics, null, false), 0);
     const frame = lyricsFrame(lyrics, { data: { synced: true, lines: [
       { time: 0, text: 'Current' }, { time: 5, text: 'Next' }
@@ -76,62 +103,110 @@ for (const aspect of ASPECTS) {
   });
 }
 
-// Exercise the real renderer in Node with a recording Canvas 2D context. This
-// checks composition and cache retirement without starting a browser/WebView.
-test('lyrics backplate fades with the caption and vanishes when lyrics disappear', () => {
-  const events = [];
-  const canvas = () => {
-    const result = { width: 1280, height: 720 };
-    const stack = [];
-    const ctx = {
-      globalAlpha: 1,
-      save() { stack.push(this.globalAlpha); },
-      restore() { this.globalAlpha = stack.pop(); },
-      clearRect() {}, beginPath() {}, rect() {}, clip() {}, roundRect() {},
-      translate() {}, scale() {}, stroke() {}, strokeText() {},
-      measureText(text) { return { width: text.length * 10 }; },
-      getTransform() { return new DOMMatrix(); },
-      fillRect() {},
-      fill() { events.push({ kind: 'backplate', canvas: result, alpha: this.globalAlpha }); },
-      fillText(text) { events.push({ kind: 'text', text, canvas: result }); },
-      drawImage(image) { events.push({ kind: 'image', image, canvas: result, alpha: this.globalAlpha }); }
-    };
-    result.getContext = () => ctx;
-    return result;
-  };
-  const previousDocument = globalThis.document;
-  const previousMatrix = globalThis.DOMMatrix;
-  // Hit-test transforms are outside this composition test.
-  globalThis.DOMMatrix = class {
-    translate() { return this; }
-    multiply() { return this; }
-    scale() { return this; }
-    inverse() { return this; }
-  };
-  globalThis.document = { createElement: canvas };
-  try {
-    const stage = canvas(), renderer = new VisualizerRenderer(stage);
-    const item = layouts['16:9'].items.find(i => i.type === 'lyrics');
-    const layout = { ...layouts['16:9'], items: [item] };
-    const sources = { getModulators: () => ({}), getFrame: () => null };
-    const lyrics = { data: { synced: true, lines: [
-      { time: 0, text: 'Current' }, { time: 5, text: 'Next' }
-    ] }, time: .5, duration: 20 };
-    renderer.draw(layout, sources, {}, 0, { lyrics, quality: 'high' });
-    const composite = renderer.layers.get(item.id).lyricsLayer;
-    assert.ok(events.some(e => e.kind === 'backplate' && e.canvas === composite));
-    assert.deepEqual(events.filter(e => e.kind === 'text').map(e => e.text), ['Current', 'Next']);
-    assert.ok(events.some(e => e.kind === 'image' && e.canvas === stage && e.image === composite && e.alpha === .5));
-    for (const absent of [null, { data: { lines: [] } }, { ...lyrics, isStopped: true }]) {
-      events.length = 0;
-      renderer.draw(layout, sources, {}, 1, { lyrics: absent, quality: 'high' });
-      assert.equal(renderer.layers.has(item.id), false);
-      assert.equal(renderer.effects.states.has(item.id), false);
-      assert.equal(events.some(e => e.kind === 'backplate' || e.kind === 'text'), false);
-    }
-    renderer.dispose();
-  } finally {
-    globalThis.document = previousDocument;
-    globalThis.DOMMatrix = previousMatrix;
-  }
-});
+for (const aspect of ASPECTS) {
+  test(`caption ${aspect} keeps synced rows clear and softly masks scrolling untimed rows`, t => {
+    withRecordingCanvas(({ canvas, events }) => {
+      const stage = canvas(), ratio = aspect.split(':').map(Number);
+      stage.height = Math.round(stage.width * ratio[1] / ratio[0]);
+      const renderer = new VisualizerRenderer(stage);
+      const item = layouts[aspect].items.find(i => i.type === 'lyrics');
+      const layout = { ...layouts[aspect], items: [item] };
+      const sources = { getModulators: () => ({}), getFrame: () => null };
+      const synced = { data: { synced: true, lines: [
+        { time: 0, text: 'Current' }, { time: 5, text: 'Next' }
+      ] }, time: 2, duration: 80 };
+      const draw = lyrics => {
+        events.length = 0;
+        renderer.draw(layout, sources, {}, lyrics?.time ?? 0, { lyrics, quality: 'high' });
+        const state = renderer.layers.get(item.id);
+        if (!state) return {};
+        const composite = state.fadeLayer, mask = state.fadeMask;
+        assert.ok(events.some(e => e.kind === 'image' && e.canvas === composite && e.image === mask && e.operation === 'destination-in'),
+          'the real renderer applies its edge mask after composing text and backplate');
+        assert.ok(events.some(e => e.kind === 'backplate' && e.canvas === composite && e.alpha === .45));
+        const alphaAt = mask.getContext('2d').alphaSampler();
+        const width = mask.width, height = mask.height;
+        const rows = events.filter(e => e.kind === 'text' && e.canvas === state.canvas);
+        return { state, composite, width, height, rows, alpha: y => alphaAt(width / 2, y) };
+      };
+      const syncedFrame = draw(synced);
+      assert.deepEqual(syncedFrame.rows.map(e => e.text), ['Current', 'Next']);
+      const rowHeight = item.style.fontSize * TEXT_LINE_HEIGHT;
+      const fade = item.effects.find(effect => effect.type === 'edge-fade');
+      const zone = syncedFrame.height * fade.top;
+      for (const row of syncedFrame.rows) {
+        // Sample the full row rectangle, including its boundaries, after the
+        // renderer has rounded the item canvas size to whole pixels.
+        assert.ok(row.y - rowHeight / 2 >= zone);
+        assert.ok(row.y + rowHeight / 2 <= syncedFrame.height - zone);
+        for (let i = 0; i <= 32; i++) close(syncedFrame.alpha(row.y - rowHeight / 2 + i / 32 * rowHeight), 1);
+      }
+      // The mask adds no dimming; upstream deliberately draws the next row at 35%.
+      assert.deepEqual(syncedFrame.rows.map(e => e.alpha), [1, .35]);
+      close(syncedFrame.alpha(0), 0);
+      close(syncedFrame.alpha(syncedFrame.height), 0);
+      close(syncedFrame.alpha(zone / 2), .5);
+      close(syncedFrame.alpha(syncedFrame.height - zone / 2), .5);
+
+      const unsynced = { data: { synced: false, lines: Array.from({ length: 9 }, (_, i) => ({ text: `Row ${i}` })) },
+        time: 40, duration: 80 };
+      const lineAdvance = rowHeight * item.params.lyricsLineSpacing;
+      const atCenter = (row, y) => ({ ...unsynced,
+        time: (row + (syncedFrame.height / 2 - y) / lineAdvance) / 8 * unsynced.duration });
+      const edgeRowMaxima = [];
+      for (const edge of [0, syncedFrame.height]) {
+        // Place a row's center exactly on the clipping boundary, then measure
+        // every point of the half-row that remains visible inside the box.
+        const edgeFrame = draw(atCenter(4, edge));
+        const edgeRow = edgeFrame.rows.find(e => e.text === 'Row 4');
+        assert.ok(edgeRow);
+        close(edgeRow.y, edge);
+        const visibleTop = Math.max(0, edgeRow.y - rowHeight / 2);
+        const visibleBottom = Math.min(edgeFrame.height, edgeRow.y + rowHeight / 2);
+        const alphas = Array.from({ length: 65 }, (_, i) => edgeRow.alpha *
+          edgeFrame.alpha(visibleTop + i / 64 * (visibleBottom - visibleTop)));
+        const maximum = Math.max(...alphas);
+        assert.ok(maximum <= .5 + 1e-10, `edge-centered row maximum alpha is ${maximum}`);
+        edgeRowMaxima.push(maximum);
+
+        const center = edge === 0 ? zone / 2 : syncedFrame.height - zone / 2;
+        const lyrics = atCenter(4, center);
+        const frame = lyricsFrame(item, lyrics, false);
+        assert.equal(frame.list, true);
+        assert.equal(frame.horizontal, false);
+        const rendered = draw(lyrics);
+        const entering = rendered.rows.find(e => e.text === 'Row 4');
+        assert.ok(entering);
+        close(entering.y, center);
+        close(entering.alpha * rendered.alpha(entering.y), .5);
+        const central = rendered.rows.find(e => e.y > zone && e.y < rendered.height - zone);
+        assert.ok(central);
+        close(central.alpha * rendered.alpha(central.y), 1);
+        // Entering/leaving glyphs meet a continuous ramp ending at zero.
+        const inward = edge === 0 ? zone / 10 : rendered.height - zone / 10;
+        close(rendered.alpha(edge), 0);
+        close(rendered.alpha(inward), .1);
+        const later = draw({ ...lyrics, time: lyrics.time + .01 });
+        const moved = later.rows.find(e => e.text === 'Row 4');
+        close(moved.y - entering.y, -.01 / unsynced.duration * 8 * lineAdvance);
+      }
+
+      // The same composite mask softens the 45% backplate, including during
+      // temporal playback fades. No detached dark strip remains at the edge.
+      const fading = draw({ ...synced, time: .5 });
+      assert.ok(events.some(e => e.kind === 'image' && e.canvas === stage && e.image === fading.composite && e.alpha === .5));
+      for (const absent of [null, { data: { lines: [] } }, { ...synced, isStopped: true }]) {
+        draw(absent);
+        assert.equal(renderer.layers.has(item.id), false);
+        assert.equal(renderer.effects.states.has(item.id), false);
+        assert.equal(events.some(e => e.kind === 'backplate' || e.kind === 'text'), false);
+      }
+      t.diagnostic(JSON.stringify({ aspect, fontSize: item.style.fontSize, rowHeight,
+        lineAdvance, block: rowHeight + lineAdvance, boxHeight: syncedFrame.height, zone,
+        fraction: fade.top, syncedRowAlpha: [1, 1], edgeCenteredRowMax: edgeRowMaxima,
+        halfZoneRowCenterAlpha: [.5, .5], edgeAlpha: 0,
+        backplateAlpha: { center: .45, halfZone: .225, edge: 0 } }));
+      renderer.dispose();
+    });
+  });
+}

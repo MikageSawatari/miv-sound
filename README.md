@@ -31,15 +31,25 @@ CTest supplies separate disposable `MIV_SOUND_DATA_DIR` paths for tests.
 `ui-shim/presets/miv-original.json` defines **mIV Original** for all five aspect
 ratios. The asset build inserts it first in each system preset file, with piano
 roll notes, artwork and track details, a spectrum, and a two-line lyrics caption.
+Timed lyrics show the current and next lines. Untimed lyrics scroll through the
+caption with broad top and bottom fades, including the dark backplate. The
+caption grows upward from its fixed bottom edge and reserves an unfaded middle
+band for both complete timed rows, with line spacing of 1.25.
+Each fade is one row high, keeping the visible half of an edge-centered row at
+no more than half opacity. The portrait 9:16 caption uses 10% smaller text to
+limit its coverage of the spectrum; other aspects keep their text sizes.
 The caption and its backplate disappear when lyrics are unavailable.
 
-Before creating a WebView, mIV Sound checks for both `plugin/config.json` and
+After initialization checks succeed and before creating a WebView, mIV Sound
+checks for both `plugin/config.json` and
 the `webview/` profile under `MIV_SOUND_DATA_DIR`. Only when both are absent does
 it save Visualizer as the startup view. If saving fails, it logs the failure and
 uses Visualizer for that session. Existing config and saved layouts are never
 changed by this default. Without a saved layout, Visualizer loads the first
 16:9 system preset, mIV Original. The tour does not start automatically in this
 view; it remains available from **Settings → Take the tour**.
+Rejected initialization writes no first-run config. Editor creation and attachment
+are refused until initialization succeeds.
 
 The upstream README is retained below for reference.
 
