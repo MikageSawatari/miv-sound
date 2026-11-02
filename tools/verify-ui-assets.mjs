@@ -39,7 +39,10 @@ if (!lifecycleMethod(upstreamApp) || lifecycleMethod(app) !== lifecycleMethod(up
     !powerConstruction(upstreamAudioManager) || powerConstruction(browserAudioManager) !== powerConstruction(upstreamAudioManager) ||
     /navigator\.mediaDevices\.getUserMedia\s*\(/.test(audioIo) ||
     !audioIo.includes("name: 'NotSupportedError'") ||
-    !audioIo.includes('_getUserMediaWithTimeout() {')) {
+    !audioIo.includes('_getUserMediaWithTimeout() {') ||
+    !audioAdapter.includes('inputDeviceId: NO_AUDIO_INPUT_DEVICE_ID') ||
+    !audioAdapter.includes('this.ioManager.markInputNotConfigured();') ||
+    !bootstrap.includes('loadAudioPreferences: async () => ({ success: true })')) {
   throw new Error('The VST UI must preserve lifecycle/display-DSP policy while refusing browser input acquisition');
 }
 const pipelineManager = await readFile(path.join(assets, 'js', 'ui', 'pipeline-manager.js'), 'utf8');

@@ -424,7 +424,9 @@
         spectrumOverlayQuality: window.__effetuneNativeSpectrum && config.spectrumOverlayQuality === 'hq' ? 'hq' : 'normal' } };
     },
     saveConfig: async config => window.__effetuneHostCall('config/save', { config }),
-    loadAudioPreferences: async () => ({ success: true, preferences: {} }),
+    // Upstream maps absent preferences to NO_AUDIO_INPUT_DEVICE_ID. Returning
+    // an empty object instead would normalize to the browser's default mic.
+    loadAudioPreferences: async () => ({ success: true }),
     saveAudioPreferences: asyncNoop,
     getAudioDevices: async () => ({ success: true, devices: [] }),
     getCommandLinePresetFile: async () => null,

@@ -1,5 +1,6 @@
 import { AudioManager as BrowserAudioManager } from './js/audio-manager.js';
 import { parseLrc, selectLyrics } from './js/library/metadata/lyrics.js';
+import { NO_AUDIO_INPUT_DEVICE_ID } from './js/audio/audio-device-constants.js';
 import {
   DSP_AUTOMATION_CATALOG,
   DSP_PARAM_PACKERS,
@@ -970,6 +971,16 @@ function fakeAudioContext(sampleRate, channels) {
 export class AudioManager extends BrowserAudioManager {
   constructor(...args) {
     super(...args);
+    // The native processor supplies audio; there is no browser input resource.
+    // Use upstream's explicit no-input preference so lifecycle/gesture recovery
+    // does not interpret an unspecified device as a missing default microphone.
+    this._setAudioPreferencesMirror({
+      ...(window.electronIntegration?.audioPreferences || {}),
+      ...(window.audioPreferences || {}),
+      inputDeviceId: NO_AUDIO_INPUT_DEVICE_ID,
+      inputDeviceLabel: ''
+    });
+    this.ioManager.markInputNotConfigured();
     this.nativePort = new NativePort(this);
     this.nativeNode = fakeNode(this.nativePort);
     this.telemetryHub.setPort(this.nativePort);

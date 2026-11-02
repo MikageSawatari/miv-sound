@@ -13,212 +13,206 @@ const assets = path.resolve(process.argv[assetsIndex + 1]);
 const assetText = relative => readFile(path.join(assets, relative), 'utf8');
 const assetModule = relative => import(pathToFileURL(path.join(assets, relative)).href);
 
-test('VST lifecycle recovery never acquires a browser microphone on focus or interaction', async t => {
-  const upstream = await readFile(new URL('../../external/effetune/js/app.js', import.meta.url), 'utf8');
-  const staged = await assetText('js/app.js');
+async function withNativeInputLifecycle({ hidden, inputDeviceId }, run) {
   const previous = { window: globalThis.window, document: globalThis.document,
     navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator') };
-  const target = () => ({
-    listeners: new Map(),
-    addEventListener(type, listener) {
-      const listeners = this.listeners.get(type) || [];
-      listeners.push(listener); this.listeners.set(type, listeners);
-    },
-    removeEventListener() {},
-    fire(type, event = {}) { for (const listener of this.listeners.get(type) || []) listener(event); }
-  });
+  let manager, powerView, sources;
   try {
-    for (const legacy of [true, false]) {
-      let captures = 0, flushed = 0, pending = Promise.resolve();
-      const document = Object.assign(target(), { hidden: false, querySelector: () => null });
-      const navigator = { mediaDevices: {
-        addEventListener() {},
-        getUserMedia() {
-          captures++;
-          return Promise.reject(Object.assign(new Error('No real device in this test'), { name: 'NotAllowedError' }));
-        }
-      } };
-      const window = Object.assign(target(), { document, navigator, location: { search: '' },
-        sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-        audioPreferences: {}, electronAPI: { onIPC() {} },
-        __effetuneHostCall: async () => ({ engineSampleRate: 48000, channels: 2 }) });
-      Object.assign(globalThis, { window, document });
-      Object.defineProperty(globalThis, 'navigator', { value: navigator, configurable: true });
-      const { AudioManager } = await assetModule('vst-audio-manager.js');
-      const manager = new AudioManager();
-      clearInterval(manager.telemetryTimer);
-      assert.equal(await manager.initAudio(), '');
-      const policy = manager.powerPolicyController;
-      assert.equal(policy.enabled, true, 'retain the default controller and its visibility/display-DSP policy');
-      if (legacy) {
-        const { AudioIOManager } = await import('../../external/effetune/js/audio/audio-io-manager.js');
-        manager.ioManager._getUserMediaWithTimeout = AudioIOManager.prototype._getUserMediaWithTimeout;
-      }
-      // Keep the real route classification, ensureActive, input acquisition and
-      // getUserMedia. Stop before a browser DSP recovery transaction can run.
-      policy.beginUserGestureResume = kind => {
-        const operation = { phase: 'collecting', requestedKinds: new Set(), resourceVersion: 0 };
-        policy._extendGestureResumeOperation(operation, kind);
-        pending = operation.inputPromise?.catch(() => {}) || Promise.resolve();
-        return pending;
-      };
-      const method = (legacy ? upstream : staged).match(/    setupEventListeners\(\) \{[\s\S]*?\n    \}/)?.[0];
-      assert.ok(method);
-      assert.equal(staged.match(/    setupEventListeners\(\) \{[\s\S]*?\n    \}/)?.[0],
-        upstream.replaceAll('\r\n', '\n').match(/    setupEventListeners\(\) \{[\s\S]*?\n    \}/)?.[0]);
-      const context = { window, document, navigator, console };
-      vm.runInNewContext(`this.App = class { ${method} };`, context);
-      const app = new context.App();
-      app.audioManager = manager;
-      app.uiManager = { flushPipelineStateToLocalStorage() { flushed++; }, setError() {} };
-      app.setupEventListeners();
-      window.fire('focus');
-      await pending;
-      if (legacy) {
-        assert.equal(captures, 1, 'original focus hook reaches beginReacquireAudioInput -> getUserMedia');
-      } else {
-        window.fire('pageshow');
-        document.fire('visibilitychange');
-        document.fire('pointerdown', { pointerType: 'mouse' });
-        document.fire('keydown', { key: 'A' });
-        await pending;
-        assert.equal(captures, 0);
-        document.hidden = true;
-        document.fire('visibilitychange');
-        window.fire('pagehide');
-        assert.equal(flushed, 2, 'saved pipeline flushing remains on hide/pagehide');
-        const io = manager.ioManager;
-        const originalBoundary = io._getUserMediaWithTimeout;
-        let boundaryCalls = 0;
-        io._getUserMediaWithTimeout = (...args) => { boundaryCalls++; return originalBoundary.call(io, ...args); };
-        await assert.rejects(io._getUserMediaWithTimeout({ audio: true }), { name: 'NotSupportedError' });
-        await assert.rejects(io.beginReacquireAudioInput({ requireVisible: false }), { name: 'NotSupportedError' });
-        await assert.rejects(io.reacquireAudioInput({ requireVisible: false }), { name: 'NotSupportedError' });
-        manager.audioContext.createBuffer = () => ({});
-        t.mock.method(console, 'warn', () => {}); // Expected unsupported-input diagnostics only.
-        await io.initAudioInput({ inputDeviceId: 'default' });
-        assert.equal(io.lastInputInitializationError.name, 'NotSupportedError');
-        assert.ok(boundaryCalls >= 4, 'initial input and both reacquisition APIs reach the same refused boundary');
-        assert.equal(captures, 0, 'no browser input path invokes the real mediaDevices API');
-      }
-      policy.dispose();
-    }
-  } finally {
-    globalThis.window = previous.window;
-    globalThis.document = previous.document;
-    if (previous.navigator) Object.defineProperty(globalThis, 'navigator', previous.navigator);
-    else delete globalThis.navigator;
-  }
-});
-
-test('hidden-at-construction VST restores plugin drawing on visibility and preserves display-DSP gating', async () => {
-  const previous = { window: globalThis.window, document: globalThis.document,
-    navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator') };
-  const target = () => ({
-    listeners: new Map(),
-    addEventListener(type, fn) { this.listeners.set(type, [...(this.listeners.get(type) || []), fn]); },
-    removeEventListener() {},
-    fire(type, event = {}) { for (const fn of this.listeners.get(type) || []) fn(event); }
-  });
-  let manager;
-  try {
-    let captures = 0, pending = Promise.resolve();
-    const document = Object.assign(target(), { hidden: true, body: new Element('body'), querySelector: () => null });
-    document.body.classList.add('view-visualizer');
-    const navigator = { mediaDevices: { addEventListener() {}, getUserMedia() {
+    let captures = 0, acquisitions = 0, boundaryCalls = 0, flushed = 0;
+    const errors = [], draws = [[], []], storage = new Map();
+    const context = await bootstrap(async serialized => {
+      const { type } = JSON.parse(serialized);
+      if (type === 'config/load') return { ok: true, config: { theme: 'graphite', startupView: 'effects' } };
+      return { ok: true, dspReady: true, engineSampleRate: 48000, channels: 2 };
+    });
+    const { window, document, navigator } = context;
+    const fire = (target, type, event = {}) => {
+      for (const listener of target.listeners.get(type) || []) listener({ type, ...event });
+    };
+    document.hidden = hidden;
+    document.querySelector = () => null;
+    window.location = { search: '' };
+    window.sessionStorage = { getItem: key => storage.get(key) ?? null,
+      setItem: (key, value) => storage.set(key, value), removeItem: key => storage.delete(key) };
+    window.navigator = navigator;
+    navigator.mediaDevices = { addEventListener() {}, getUserMedia() {
       captures++; return Promise.reject(new Error('Unexpected browser capture'));
-    } } };
-    const window = Object.assign(target(), { document, navigator, location: { search: '' },
-      sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-      audioPreferences: {}, electronAPI: { onIPC() {} },
-      __effetuneHostCall: async () => ({ engineSampleRate: 48000, channels: 2 }) });
+    } };
+    window.audioPreferences = inputDeviceId === undefined ? {} : { inputDeviceId, outputChannels: 2 };
     Object.assign(globalThis, { window, document });
     Object.defineProperty(globalThis, 'navigator', { value: navigator, configurable: true });
     const { AudioManager } = await assetModule('vst-audio-manager.js');
+    const { ElectronIntegration } = await assetModule('js/electron-integration.js');
+    window.electronIntegration = { isElectron: true, audioPreferences: { ...window.audioPreferences },
+      loadAudioPreferences() { return ElectronIntegration.prototype.loadAudioPreferences.call(this); } };
     manager = new AudioManager();
     clearInterval(manager.telemetryTimer);
-    assert.equal(await manager.initAudio(), '');
-    const draws = [[], []];
-    [manager.pipelineA, manager.pipelineB] = draws.map(history => [{
+    const io = manager.ioManager;
+    const acquire = io.beginReacquireAudioInput, boundary = io._getUserMediaWithTimeout;
+    // Observation only: execute the original methods if reached. Do not replace
+    // any controller, gesture, lifecycle, decision, or reconciliation method.
+    io.beginReacquireAudioInput = (...args) => { acquisitions++; return acquire.apply(io, args); };
+    io._getUserMediaWithTimeout = (...args) => { boundaryCalls++; return boundary.apply(io, args); };
+    const { NO_AUDIO_INPUT_DEVICE_ID } = await assetModule('js/audio/audio-device-constants.js');
+    const expectNoInput = () => {
+      const input = io.getInputSnapshot();
+      assert.equal(input.inputConfigured, false);
+      assert.equal(input.state, 'not-configured');
+      assert.equal(input.inputSourcePresent, false);
+      assert.equal(input.inputRouteConnected, false);
+      assert.equal(input.trackState, 'absent');
+      assert.equal(io.lastInputInitializationError, null);
+      assert.equal(window.audioPreferences.inputDeviceId, NO_AUDIO_INPUT_DEVICE_ID);
+      assert.equal(window.electronIntegration.audioPreferences.inputDeviceId, NO_AUDIO_INPUT_DEVICE_ID);
+    };
+    expectNoInput(); // Constructor must already be consistent, before initAudio.
+    await window.electronIntegration.loadAudioPreferences();
+    expectNoInput(); // Loading preferences must not restore the default mic.
+    assert.equal(await manager.initAudio(), ''); // Use the actual VST startup path.
+    [manager.pipelineA, manager.pipelineB] = draws.map((history, i) => [{ id: i + 1,
+      type: 'VolumePlugin', enabled: true, getTemporalCapability: () => 'stateless',
       setPowerUiEnabled(enabled) { history.push(enabled); }
     }]);
     const policy = manager.powerPolicyController;
-    assert.equal(policy.enabled, true);
-    assert.equal(policy.pageHidden, true);
-    // Native DSP does not provide Web Audio worklet render proofs. Isolate
-    // that transport, while keeping real lifecycle handling, suppression,
-    // visibility decisions and plugin setPowerUiEnabled calls under test.
-    policy._requestWorkletObservation = () => {};
-    policy.requestReconcile = async () => policy._setUiPowerGate(policy.effectiveState, policy.processingDirective);
-    policy.beginUserGestureResume = kind => {
-      const operation = { phase: 'collecting', requestedKinds: new Set(), resourceVersion: 0 };
-      policy._extendGestureResumeOperation(operation, kind);
-      pending = operation.inputPromise?.catch(() => {}) || Promise.resolve();
-      return pending;
-    };
-    const appSource = await assetText('js/app.js'), uiSource = await assetText('js/ui-manager.js');
+    const { PowerPolicyController } = await assetModule('js/audio/power-policy-controller.js');
+    for (const name of ['beginUserGestureResume', 'requestResumeFromUserInteraction',
+      'requestReconcile', 'handlePageLifecycleEvent']) {
+      assert.equal(policy[name], PowerPolicyController.prototype[name], `real ${name}`);
+    }
+    const { PowerStateView } = await assetModule('js/ui/power-state-view.js');
+    const action = new Element('button');
+    action.dataset.powerResumeAction = '';
+    action.hidden = true;
+    powerView = new PowerStateView({ eventSource: manager, documentRef: document,
+      actionResolver: () => [action], onResume: () => policy.requestResumeFromUserGesture('dedicated-input') });
     const method = (text, name) => {
       const found = text.match(new RegExp(`    ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n    \\}`))?.[0];
       assert.ok(found, name); return found;
     };
-    const context = { window, document, navigator, console };
+    const appSource = await assetText('js/app.js'), uiSource = await assetText('js/ui-manager.js');
+    const upstreamApp = (await readFile(new URL('../../external/effetune/js/app.js', import.meta.url), 'utf8')).replaceAll('\r\n', '\n');
+    assert.equal(method(appSource, 'setupEventListeners'), method(upstreamApp, 'setupEventListeners'));
     vm.runInNewContext(`this.App = class { ${method(appSource, 'setupEventListeners')} };
       this.UI = class { ${method(uiSource, 'isEffectPipelineHidden')} ${method(uiSource, 'updateEffectPipelineVisibility')} };`, context);
     const ui = Object.assign(new context.UI(), { audioManager: manager, isDoubleBlindActive: () => false,
-      reportVisualizerFeedAllowed() {}, flushPipelineStateToLocalStorage() {} });
+      reportVisualizerFeedAllowed() {}, flushPipelineStateToLocalStorage() { flushed++; },
+      t: key => key, setError(...args) { errors.push(args); } });
+    window.uiManager = ui;
     const app = Object.assign(new context.App(), { audioManager: manager, uiManager: ui });
     app.setupEventListeners();
     ui.updateEffectPipelineVisibility();
+    await manager.startPowerPolicyController();
+    const settle = async () => {
+      for (let i = 0; i < 3; i++) {
+        await Promise.resolve();
+        await policy.reconcilePromise;
+        await policy.gestureResumePromise;
+        await policy.queue;
+      }
+    };
+    const expectHealthy = () => {
+      expectNoInput();
+      assert.equal(policy.resourceHealth, 'healthy');
+      assert.equal(policy.transitionError, null);
+      const snapshot = policy.getSnapshot();
+      assert.equal(snapshot.resourceHealth, 'healthy');
+      assert.equal(snapshot.transitionError.code, null);
+      assert.equal(snapshot.manualResumeRequired, false);
+      assert.equal(policy.gestureResumePromise, null, 'ordinary interaction starts no recovery transaction');
+      powerView.refreshActions();
+      assert.equal(action.hidden, true, 'no Resume audio processing / microphone input item');
+      assert.equal(captures, 0);
+      assert.equal(acquisitions, 0, 'no input reacquisition transaction starts');
+      assert.equal(boundaryCalls, 0, 'the defensive capture rejection is not part of normal startup');
+      assert.deepEqual(errors, [], 'effects/visualizer UI reports no missing input');
+    };
     const expectDraw = allowed => {
       assert.equal(policy.dspUiActivityAllowed, allowed);
       for (const history of draws) assert.equal(history.at(-1), allowed);
     };
-    expectDraw(false);
-    document.hidden = false;
-    document.fire('visibilitychange');
-    await pending;
-    assert.equal(policy.pageHidden, false);
-    document.body.classList.remove('view-visualizer');
-    ui.updateEffectPipelineVisibility();
-    expectDraw(true);
-    for (const [surface, type, event] of [[window, 'pageshow', {}], [window, 'focus', {}],
-      [document, 'visibilitychange', {}], [document, 'pointerdown', { pointerType: 'mouse' }],
-      [document, 'keydown', { key: 'A' }]]) {
-      surface.fire(type, event);
-      await pending;
-      expectDraw(true);
-      assert.equal(captures, 0, type);
-    }
-    // Genuine visibility and view changes must still suppress/re-enable both
-    // pipelines, independently of browser input acquisition failures.
-    document.hidden = true;
-    document.fire('visibilitychange');
-    expectDraw(false);
-    document.hidden = false;
-    window.fire('pageshow');
-    await pending;
-    expectDraw(true);
-    document.body.classList.add('view-visualizer');
-    ui.updateEffectPipelineVisibility();
-    expectDraw(false);
-    document.body.classList.remove('view-visualizer');
-    ui.updateEffectPipelineVisibility();
-    expectDraw(true);
-    policy.setDspUiSuppressed('mini-player', true);
-    expectDraw(false);
-    policy.setDspUiSuppressed('mini-player', false);
-    expectDraw(true);
-    assert.equal(captures, 0);
+    const { VisualizerSources } = await assetModule('js/visualizer/visualizer-sources.js');
+    sources = new VisualizerSources(manager);
+    assert.equal(sources.getStatus(), 'ready', 'native visualizer input does not depend on a browser microphone');
+    await settle();
+    expectHealthy();
+    await run({ window, document, manager, policy, ui, action, fire, settle, expectHealthy, expectDraw,
+      getFlushed: () => flushed });
   } finally {
-    if (manager) {
-      clearInterval(manager.telemetryTimer);
-      manager.powerPolicyController.dispose();
-    }
+    sources?.dispose();
+    powerView?.dispose();
+    if (manager) { clearInterval(manager.telemetryTimer); manager.powerPolicyController.dispose(); }
     globalThis.window = previous.window;
     globalThis.document = previous.document;
     if (previous.navigator) Object.defineProperty(globalThis, 'navigator', previous.navigator);
     else delete globalThis.navigator;
   }
+}
+
+test('VST input is unconfigured and stays healthy through real startup, gestures and settings', async () => {
+  for (const inputDeviceId of [undefined, 'default', 'migrated-microphone-id']) {
+    await withNativeInputLifecycle({ hidden: false, inputDeviceId }, async h => {
+      h.expectDraw(true);
+      for (const [surface, type, event] of [[h.window, 'focus', {}], [h.window, 'pageshow', {}],
+        [h.document, 'visibilitychange', {}], [h.document, 'pointerdown', { pointerType: 'mouse' }],
+        [h.document, 'keydown', { key: 'A' }]]) {
+        h.fire(surface, type, event);
+        await h.settle();
+        h.expectHealthy(); h.expectDraw(true);
+      }
+      await h.action.dispatch('click');
+      await h.settle();
+      h.expectHealthy(); // The hidden recovery action must remain a no-op, even if invoked.
+      const previousDocument = globalThis.document;
+      const configDocument = createFakeDocument();
+      globalThis.document = configDocument;
+      try {
+        const { showConfigDialog } = await assetModule('js/electron/configIntegration.js');
+        await showConfigDialog(true, {});
+        const html = configDocument.body.children[0].innerHTML;
+        assert.doesNotMatch(html, /resume-resource-failed|Resume audio processing|Resume microphone input|microphone access denied|missing (?:audio )?input/i);
+        assert.equal(configDocument.getElementById('input-device-select'), null);
+        await configDocument.getElementById('close-btn').dispatchEvent('click');
+      } finally { globalThis.document = previousDocument; }
+      h.expectHealthy();
+    });
+  }
+});
+
+test('hidden-at-construction VST restores draw permission with the real controller and no recovery error', async () => {
+  await withNativeInputLifecycle({ hidden: true }, async h => {
+    assert.equal(h.policy.pageHidden, true);
+    h.expectDraw(false);
+    h.document.hidden = false;
+    h.fire(h.document, 'visibilitychange');
+    await h.settle();
+    assert.equal(h.policy.pageHidden, false);
+    h.expectHealthy(); h.expectDraw(true);
+    for (const [surface, type, event] of [[h.window, 'pageshow', {}], [h.window, 'focus', {}],
+      [h.document, 'pointerdown', { pointerType: 'mouse' }], [h.document, 'keydown', { key: 'A' }]]) {
+      h.fire(surface, type, event);
+      await h.settle();
+      h.expectHealthy(); h.expectDraw(true);
+    }
+    h.document.body.classList.add('view-visualizer');
+    h.ui.updateEffectPipelineVisibility();
+    await h.settle();
+    h.expectHealthy(); h.expectDraw(false);
+    h.document.body.classList.remove('view-visualizer');
+    h.ui.updateEffectPipelineVisibility();
+    await h.settle();
+    h.expectHealthy(); h.expectDraw(true);
+    h.document.hidden = true;
+    h.fire(h.document, 'visibilitychange');
+    await h.settle();
+    h.expectHealthy(); h.expectDraw(false);
+    h.document.hidden = false;
+    h.fire(h.window, 'pageshow');
+    await h.settle();
+    h.expectHealthy(); h.expectDraw(true);
+    h.policy.setDspUiSuppressed('mini-player', true); h.expectDraw(false);
+    h.policy.setDspUiSuppressed('mini-player', false); h.expectDraw(true);
+    assert.ok(h.getFlushed() > 0);
+  });
 });
 
 test('shared history snapshots and restoration retain native logical plugin IDs', async () => {

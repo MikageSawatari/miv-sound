@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url';
 import * as irContract from '../../external/effetune/js/ir-library/ir-plugin-contract.js';
 import { parseLrc, selectLyrics } from '../../external/effetune/js/library/metadata/lyrics.js';
 import { TelemetryHub } from '../../external/effetune/js/audio/telemetry-hub.js';
+import { NO_AUDIO_INPUT_DEVICE_ID } from '../../external/effetune/js/audio/audio-device-constants.js';
 import {
   getPluginExecutionCapabilities
 } from '../../external/effetune/js/audio/plugin-execution-capabilities.js';
@@ -4017,14 +4018,16 @@ function createHostLyricsManager() {
   const { context } = createNativePort();
   let now = 0;
   Object.assign(context, {
+    NO_AUDIO_INPUT_DEVICE_ID,
     performance: { now: () => now },
     setInterval() { return 1; },
     BrowserAudioManager: class {
       constructor() {
         this.telemetryHub = { setPort() {}, setSources() {}, handleMessage() {} };
         this.contextManager = {};
-        this.ioManager = {};
+        this.ioManager = { markInputNotConfigured() {} };
       }
+      _setAudioPreferencesMirror(preferences) { context.window.audioPreferences = preferences; }
       getCurrentPipeline() { return []; }
     }
   });
