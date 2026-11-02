@@ -93,7 +93,7 @@ test('bundled Visualizer module graph retains viewport menu clamping', async () 
   } finally { globalThis.window = previousWindow; }
 });
 
-test('Visualizer add-item choices omit Lyrics, Video and Counter while retaining their saved types', async () => {
+test('Visualizer add-item choices include host Lyrics and omit Video and Counter while retaining their saved types', async () => {
   const { VisualizerEditor } = await assetModule('js/visualizer/visualizer-editor.js');
   const { ITEM_TYPES, createDefaultLayout } = await assetModule('js/visualizer/visualizer-model.js');
   const previousDocument = globalThis.document;
@@ -121,12 +121,13 @@ test('Visualizer add-item choices omit Lyrics, Video and Counter while retaining
     assert.ok(ITEM_TYPES.includes('lyrics'), 'Lyrics remains a supported saved item type');
     assert.ok(ITEM_TYPES.includes('video'), 'Video remains a supported saved item type');
     assert.ok(ITEM_TYPES.includes('counter'));
+    assert.ok(choices.includes('lyrics'));
     assert.ok(!choices.includes('counter'));
-    assert.deepEqual(choices.toSorted(), ITEM_TYPES.filter(type => !['lyrics', 'video', 'counter'].includes(type)).toSorted());
+    assert.deepEqual(choices.toSorted(), ITEM_TYPES.filter(type => !['video', 'counter'].includes(type)).toSorted());
   } finally { globalThis.document = previousDocument; }
 });
 
-test('bundled Visualizer system presets omit Lyric Stage and Counter Gallery across all aspects', async () => {
+test('bundled Visualizer system presets retain Lyric Stage and omit Counter Gallery across all aspects', async () => {
   const sourceDirectory = new URL('../../external/effetune/presets/visualizer/', import.meta.url);
   const { VisualizerPresetStore } = await assetModule('js/visualizer/visualizer-preset-store.js');
   const { ASPECT_FILES } = await assetModule('js/visualizer/visualizer-model.js');
@@ -139,10 +140,13 @@ test('bundled Visualizer system presets omit Lyric Stage and Counter Gallery acr
     .filter(file => file.endsWith('.json')).sort(), files);
   for (const file of files) {
     const expected = JSON.parse(await readFile(new URL(file, sourceDirectory), 'utf8'));
-    delete expected['Lyric Stage'];
     delete expected['Counter Gallery'];
+    if (expected['Lyric Stage']) {
+      assert.ok(expected['Lyric Stage'].items.some(item => item.type === 'lyrics'));
+      assert.ok(!expected['Lyric Stage'].items.some(item => item.type === 'counter'));
+    }
     const actual = JSON.parse(await assetText(`presets/visualizer/${file}`));
-    assert.deepEqual(actual, expected, `${file} retains all other presets, including Cinema Strip`);
+    assert.deepEqual(actual, expected, `${file} retains all other presets, including Lyric Stage`);
     const aspect = Object.keys(ASPECT_FILES).find(aspect => ASPECT_FILES[aspect] === file);
     assert.deepEqual(bundled[aspect], expected);
   }
@@ -183,6 +187,25 @@ test('bundled Visualizer reads transient host metadata without an internal playe
   assert.equal(VisualizerView.prototype.metadata.call(view), metadata, 'partial tags do not require a title');
   metadata = null;
   assert.equal(VisualizerView.prototype.metadata.call(view), null);
+});
+
+test('bundled Visualizer host lyrics keep upstream Offset and fade inputs', async () => {
+  const { VisualizerView } = await assetModule('js/visualizer/visualizer-view.js');
+  const { lyricsFrame, lyricsOpacity } = await assetModule('js/visualizer/visualizer-lyrics.js');
+  const { parseLrc } = await assetModule('js/library/metadata/lyrics.js');
+  let lyrics = { data: parseLrc('[00:01.00]One\n[00:02.00]Two'),
+    time: 2.25, duration: 10, isStopped: false };
+  const view = { uiManager: { audioManager: { getHostLyrics: () => lyrics } } };
+  assert.equal(VisualizerView.prototype.lyrics.call(view), lyrics);
+  const item = { params: { lyricsOffset: 0.5, lyricsView: 'list',
+    lyricsMotion: 'step', lyricsStepDuration: 0, lyricsFadeIn: 5, lyricsFadeOut: 2 } };
+  const input = VisualizerView.prototype.lyrics.call(view);
+  assert.equal(lyricsFrame(item, input, false).current, 0, 'positive Offset delays the next lyric');
+  assert.equal(lyricsOpacity(item, input, false), 0.45, 'fade uses the same audible position');
+  lyrics.time = 9;
+  assert.equal(lyricsOpacity(item, input, false), 0.5, 'duration controls the tail fade');
+  lyrics = null;
+  assert.equal(VisualizerView.prototype.lyrics.call(view), null);
 });
 
 test('imported Counter layouts receive no misleading project position', async () => {

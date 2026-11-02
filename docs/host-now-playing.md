@@ -1,6 +1,6 @@
 # Host-supplied Now Playing metadata
 
-Any host embedding EffeTune Mixwright can supply the currently playing media's
+Any host embedding mIV Sound (based on EffeTune Mixwright) can supply the currently playing media's
 title, album, artist, and artwork to Visualizer. This optional extension is
 independent of the host name, audio processing, and the built-in media player.
 Hosts that do not send metadata retain the existing empty metadata display.
@@ -117,3 +117,81 @@ VST3 message contract above.
 
 VST3 API references: [IConnectionPoint](https://steinbergmedia.github.io/vst3_doc/vstinterfaces/classSteinberg_1_1Vst_1_1IConnectionPoint.html),
 [IAttributeList](https://steinbergmedia.github.io/vst3_doc/vstinterfaces/classSteinberg_1_1Vst_1_1IAttributeList.html).
+
+## Host lyrics and playback position (Windows)
+
+mIV Sound extends the same `EffeTune.NowPlaying` ID with optional attributes.
+The EffeTune message IDs are retained for compatibility with existing hosts.
+
+| Attribute | VST3 type | Meaning and limit |
+| --- | --- | --- |
+| `mediaGeneration` | `setInt` | Media generation, all 64 bits of the host's u64 carried by the VST integer |
+| `lyricsSidecar` | `setString` | Decoded same-name `.lrc` text; up to 262,144 UTF-16 code units excluding the terminator |
+| `lyricsEmbedded` | `setString` | Embedded lyrics text; same limit |
+| `durationSeconds` | `setFloat` | Finite, nonnegative media duration in seconds; omit when unknown |
+
+The string validation, full replacement, revision, ownership and transient-state
+rules above also apply to these attributes. Missing lyrics clear their candidate;
+missing generation or duration removes that field. Invalid types, malformed
+UTF-16, excessive text, or invalid duration reject the entire replacement with
+`kInvalidArgument`, leaving its revision and all previous values intact.
+The receiver uses upstream `parseLrc` on both candidates and
+`selectLyrics({ sidecar, embedded })` once per accepted Now Playing revision.
+Selection therefore prefers timed sidecar, timed embedded, untimed sidecar,
+then untimed embedded lyrics. Metadata-only text has no lyric lines.
+As in upstream, selection bounds the displayed model to 2048 lines, a shared
+32,768-character budget, 4096 characters per line, and 2048 timed words. The
+262,144-unit transport limit is separate from these display limits.
+
+Increment `mediaGeneration` on every media adoption (including A to B to A),
+Local/Remote change, and clear. Completing artwork or lyrics changes the snapshot
+revision but retains that media generation. Include the same generation in the
+following independent position notification; delivery order need not match.
+Older plug-ins ignore the new Now Playing attributes.
+
+Send **`EffeTune.PlaybackPosition`** through the same UI-thread `notify` entry:
+
+| Attribute | VST3 type | Meaning and validation |
+| --- | --- | --- |
+| `mediaGeneration` | `setInt` | Required; same u64 bit pattern as Now Playing |
+| `available` | `setInt` | Required; exactly 0 or 1. With 0, all remaining attributes are ignored |
+| `playing` | `setInt` | Required with available=1; exactly 0 (paused) or 1 (advancing) |
+| `positionSeconds` | `setFloat` | Required with available=1; finite and nonnegative media seconds |
+| `rate` | `setFloat` | Required with available=1; finite and positive, including while paused |
+| `hostTimeNanoseconds` | `setInt` | Required with available=1; nonnegative QPC-derived nanoseconds when the position was read |
+
+The Windows receiver assumes the host and MSVC `std::chrono::steady_clock` use the
+same QPC clock and nanosecond epoch, without a process-relative origin. At response
+creation the native receiver returns `position + (now - hostTime) * rate` while
+playing, and the unchanged position while paused (bounded below by zero).
+The host has already accounted for plug-in latency; the receiver does not subtract
+it again. Use available=0 for Remote, stopped playback, or absent media. Missing or
+invalid required attributes reject the notification with `kInvalidArgument` and
+preserve the previous complete position. Only the latest position is retained;
+it is instance-local, survives editor closure and VST state reloads, is never
+serialized, and is cleared on termination. Resend both snapshots after plug-in
+initialization. No delivery retries or ordering protocol are added by this extension.
+
+Both `host/getInfo` and `telemetry/read` include an extrapolated `playback` object
+with `mediaGeneration`, `available`, `playing`, `positionSeconds`, and `rate`.
+The two flags are JSON integers. Generation uses a decimal **string** in both
+internal UI snapshots, preserving all u64 bits across JavaScript number limits;
+it is absent before any generation has been supplied. This internal encoding does
+not change the host-facing VST type. Lyrics travel only when the Now Playing
+revision changes. JS interpolates from response receipt with `performance.now()`.
+Lyrics require equal media generations, available=1, and a fresh position for the
+current display generation. On becoming visible, the UI marks its position stale
+before drawing; a request issued before that visibility change cannot clear it.
+If a hidden poll was processed, the first resumed poll discards queued telemetry
+and the next poll fetches a fresh position. A brief hide without a processed
+hidden poll reads a fresh position directly; visibility changes do not change
+`telemetryWasHidden`. Paused lyrics remain visible at a fixed time.
+
+The Visualizer Lyrics item and the built-in Lyric Stage presets use this host
+provider, including the upstream Offset and fade settings. The pinned v0.15.0
+Lyric Stage presets (16:9 and 9:16) contain no Counter items and are retained
+unchanged. Counter and Counter Gallery remain excluded, and imported Counters
+still receive no position. Host playback is independent of `hostTransport` and
+does not change ProcessContext handling. The built-in player and its `.lrc` file
+attachment workflow remain excluded; lyrics come from the host. Remote delivery
+is controlled by the host and needs no special receiver behavior.

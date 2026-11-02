@@ -8,6 +8,7 @@ import { installThemePaletteStub } from '../../external/effetune/tests/helpers/t
 import { fileURLToPath } from 'node:url';
 
 import * as irContract from '../../external/effetune/js/ir-library/ir-plugin-contract.js';
+import { parseLrc, selectLyrics } from '../../external/effetune/js/library/metadata/lyrics.js';
 import { TelemetryHub } from '../../external/effetune/js/audio/telemetry-hub.js';
 import {
   getPluginExecutionCapabilities
@@ -119,7 +120,7 @@ function createNativePort() {
     document: createEventTarget(),
     Float32Array,
     getPluginExecutionCapabilities,
-    performance,
+    performance, parseLrc, selectLyrics,
     queueMicrotask,
     setTimeout,
     Uint32Array,
@@ -160,6 +161,8 @@ function createNativePort() {
     getHostTransport: context.NowPlayingManager.prototype.getHostTransport,
     applyNativeHostTransport: context.NowPlayingManager.prototype.applyNativeHostTransport
   };
+  Object.assign(owner, Object.fromEntries(Object.getOwnPropertyNames(context.NowPlayingManager.prototype)
+    .filter(key => key !== 'constructor').map(key => [key, context.NowPlayingManager.prototype[key]])));
   const port = new context.NativePort(owner);
   const node = { port };
   context.window.workletNode = node;
@@ -1015,6 +1018,7 @@ test('startup rebuilds a pending state replacement but preserves an ordinary rea
           }
         }
       };
+      Object.assign(context, { parseLrc, selectLyrics, performance });
       vm.runInNewContext(
         `this.Manager = class {${source.slice(initStart, initEnd)}\n` +
           `${source.slice(rebuildStart, rebuildEnd)}\n${nowPlayingMethods}\n};`, context);
@@ -4006,4 +4010,220 @@ test('startup membership lets a recreated IR Reverb reach ready', async () => {
     'pipeline/assetCommit'
   ]);
   context.plugin.cleanup();
+});
+
+
+function createHostLyricsManager() {
+  const { context } = createNativePort();
+  let now = 0;
+  Object.assign(context, {
+    performance: { now: () => now },
+    setInterval() { return 1; },
+    BrowserAudioManager: class {
+      constructor() {
+        this.telemetryHub = { setPort() {}, setSources() {}, handleMessage() {} };
+        this.contextManager = {};
+        this.ioManager = {};
+      }
+      getCurrentPipeline() { return []; }
+    }
+  });
+  vm.runInNewContext(source.slice(source.indexOf('function fakeNode'))
+    .replace('export class AudioManager', 'this.HostLyricsAudioManager = class AudioManager'), context);
+  const manager = new context.HostLyricsAudioManager();
+  Object.assign(manager, {
+    applyNativePerformanceStatus() {}, applyHostAutomationDeltas() {}, applyHostDiagnostics() {},
+    applyNativeBypass() {}, applyNativeRuntimeEvents() {}, updateExposedProperties() {}
+  });
+  const metadata = (generation = '1', sidecar = '[00:01.00]One\n[00:02.00]Two') => ({
+    mediaGeneration: generation, lyricsSidecar: sidecar, durationSeconds: 60
+  });
+  const playback = (generation = '1', position = 1, playing = 1, rate = 2) => ({
+    mediaGeneration: generation, available: 1, playing, positionSeconds: position, rate
+  });
+  const publish = (revision = 1, generation = '1') => {
+    manager.applyNativeNowPlaying({ nowPlayingRevision: revision, nowPlaying: metadata(generation) });
+    manager.applyNativePlayback({ playback: playback(generation) }, manager.lyricsDisplayGeneration);
+  };
+  const visibility = hidden => {
+    context.document.hidden = hidden;
+    context.document.dispatch('visibilitychange');
+  };
+  return { context, manager, metadata, playback, publish, visibility, setNow: value => { now = value; } };
+}
+
+test('host lyrics parse and select each candidate once per Now Playing revision', () => {
+  const { context, manager, metadata, playback, setNow } = createHostLyricsManager();
+  let parses = 0, selections = 0;
+  context.parseLrc = text => { parses++; return parseLrc(text); };
+  context.selectLyrics = candidates => { selections++; return selectLyrics(candidates); };
+  const info = { nowPlayingRevision: 1, nowPlaying: metadata() };
+  manager.applyNativeNowPlaying(info);
+  manager.applyNativePlayback({ playback: playback() }, 0);
+  const data = manager.getHostLyrics().data;
+  for (let i = 0; i < 20; i++) {
+    setNow(i * 16);
+    assert.equal(manager.getHostLyrics().data, data);
+    manager.applyNativeNowPlaying(info);
+    manager.applyNativeNowPlaying({ nowPlayingRevision: 1 });
+  }
+  assert.equal(parses, 2);
+  assert.equal(selections, 1);
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 2, nowPlaying: metadata() });
+  assert.equal(parses, 4);
+  assert.equal(selections, 2);
+  assert.notEqual(manager.getHostLyrics().data, data);
+});
+
+test('host lyrics require equal full-width media generations and an available fresh position', () => {
+  const { manager, metadata, playback } = createHostLyricsManager();
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 1, nowPlaying: metadata('9007199254740992') });
+  manager.applyNativePlayback({ playback: playback('9007199254740993') }, 0);
+  assert.equal(manager.getHostLyrics(), null);
+  manager.applyNativePlayback({ playback: playback('9007199254740992') }, 0);
+  assert.ok(manager.getHostLyrics());
+  manager.applyNativePlayback({ playback: { mediaGeneration: '9007199254740992', available: 0 } }, 0);
+  assert.equal(manager.getHostLyrics(), null);
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 2, nowPlaying: metadata() });
+  assert.equal(manager.getHostLyrics(), null, 'A lyrics and B position cannot be combined in either delivery order');
+  manager.applyNativePlayback({ playback: playback() }, 0);
+  assert.ok(manager.getHostLyrics());
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 3, nowPlaying: null });
+  assert.equal(manager.getHostLyrics(), null);
+});
+
+test('host lyrics interpolate rate from response receipt and hold the paused position', () => {
+  const { manager, publish, playback, setNow } = createHostLyricsManager();
+  publish();
+  setNow(750);
+  assert.equal(manager.getHostLyrics().time, 2.5);
+  manager.applyNativePlayback({ playback: playback('1', 20, 0, 0.5) }, 0);
+  setNow(9000);
+  assert.equal(manager.getHostLyrics().time, 20);
+  assert.equal(manager.getHostLyrics().isStopped, false, 'pause keeps the current lyrics visible');
+  assert.equal(manager.getHostLyrics().duration, 60);
+});
+
+test('host lyrics timestamp response receipt before parsing a changed revision', async () => {
+  const { context, manager, metadata, playback, setNow } = createHostLyricsManager();
+  context.window.__effetuneHostCall = async () => ({ nowPlayingRevision: 1,
+    nowPlaying: metadata(), playback: playback() });
+  context.parseLrc = text => { setNow(100); return parseLrc(text); };
+  await manager.pollNativeTelemetryOnce();
+  assert.equal(manager.hostPlayback.receivedAt, 0);
+  assert.equal(manager.getHostLyrics().time, 1.2, 'lyric parsing time remains part of interpolation');
+});
+
+test('host lyrics start with the host/getInfo snapshot', async () => {
+  const { context, manager, metadata, playback } = createHostLyricsManager();
+  const requests = [];
+  context.window.__effetuneHostCall = async (type, payload) => {
+    requests.push({ type, payload });
+    return { engineSampleRate: 48000, channels: 2,
+      nowPlayingRevision: 1, nowPlaying: metadata(), playback: playback('1', 12, 0) };
+  };
+  assert.equal(await manager.initAudio(), '');
+  assert.equal(requests[0].type, 'host/getInfo');
+  assert.equal(requests[0].payload.startup, true);
+  assert.equal(manager.getHostLyrics().time, 12);
+});
+
+for (const throttled of [false, true]) {
+  test(`host lyrics resume with telemetry/read after ${throttled ? 'a throttled hidden poll' : 'a brief hide without polling'}`, async () => {
+    const { context, manager, publish, playback, visibility } = createHostLyricsManager();
+    publish();
+    const generation = manager.lyricsDisplayGeneration;
+    const requests = [];
+    let finish;
+    context.window.__effetuneHostCall = type => {
+      if (!['host/getInfo', 'telemetry/read', 'telemetry/discard'].includes(type)) return Promise.resolve({ ok: true });
+      requests.push(type);
+      return new Promise(resolve => { finish = resolve; });
+    };
+    visibility(true);
+    if (throttled) {
+      context.Date = { now: () => 1000 };
+      manager.lastHiddenContextPoll = 900;
+      await manager.pollNativeTelemetryOnce();
+    }
+    assert.deepEqual(requests, [], 'no hidden request was processed');
+    assert.equal(!!manager.telemetryWasHidden, false, 'only a processed hidden poll requires discard');
+    visibility(false);
+    assert.equal(manager.lyricsDisplayGeneration, generation + 1);
+    assert.equal(manager.getHostLyrics(), null, 'visibility marks the position stale before drawing');
+    const pending = manager.pollNativeTelemetryOnce();
+    assert.deepEqual(requests, ['telemetry/read'], 'a brief hide preserves the telemetry queue');
+    assert.equal(manager.getHostLyrics(), null, 'issuing the resumed read cannot release stale state');
+    finish({ playback: playback('1', 25, 0) });
+    await pending;
+    assert.equal(manager.getHostLyrics().time, 25, 'the current display generation response releases stale state');
+  });
+}
+
+test('host lyrics discard after a processed hidden poll and stay stale until the resumed read responds', async () => {
+  const { context, manager, publish, playback, visibility } = createHostLyricsManager();
+  publish();
+  visibility(true);
+  const requests = [];
+  let position = 3;
+  context.window.__effetuneHostCall = async type => {
+    requests.push(type);
+    return { playback: playback('1', position, 0) };
+  };
+  await manager.pollNativeTelemetryOnce();
+  assert.equal(manager.telemetryWasHidden, true, 'the processed hidden poll retains upstream discard behavior');
+  assert.equal(manager.getHostLyrics().time, 3, 'hidden host/getInfo adopts paused position before its early return');
+  position = 25; // Seek after the last hidden poll.
+  visibility(false);
+  assert.equal(manager.getHostLyrics(), null, 'visibility event makes it stale before drawing or polling');
+  await manager.pollNativeTelemetryOnce();
+  assert.equal(manager.getHostLyrics(), null, 'discard cannot clear stale position');
+  let finish;
+  context.window.__effetuneHostCall = type => {
+    requests.push(type);
+    return new Promise(resolve => { finish = resolve; });
+  };
+  const pending = manager.pollNativeTelemetryOnce();
+  assert.equal(manager.getHostLyrics(), null, 'the resumed read must respond before lyrics become fresh');
+  finish({ playback: playback('1', position, 0) });
+  await pending;
+  assert.equal(manager.getHostLyrics().time, 25);
+  assert.deepEqual(requests, ['host/getInfo', 'telemetry/discard', 'telemetry/read']);
+});
+
+test('host lyrics ignore a hidden request whose response arrives in a newer display generation', async () => {
+  const { context, manager, publish, playback, visibility } = createHostLyricsManager();
+  publish();
+  visibility(true);
+  let finish;
+  context.window.__effetuneHostCall = () => new Promise(resolve => { finish = resolve; });
+  const pending = manager.pollNativeTelemetryOnce();
+  visibility(false);
+  finish({ playback: playback('1', 40, 0) });
+  await pending;
+  assert.equal(manager.getHostLyrics(), null, 'late response cannot release stale state');
+  assert.equal(manager.hostPlayback.positionSeconds, 1, 'old-generation position is not adopted');
+  context.window.__effetuneHostCall = async () => ({ playback: playback('1', 5, 0) });
+  await manager.pollNativeTelemetryOnce(); // discard
+  assert.equal(manager.getHostLyrics(), null);
+  await manager.pollNativeTelemetryOnce();
+  assert.equal(manager.getHostLyrics().time, 5);
+});
+
+test('host lyrics selection follows upstream LRC parsing for mixed tags and invalid timestamps', () => {
+  const { manager, metadata, playback } = createHostLyricsManager();
+  manager.applyNativePlayback({ playback: playback() }, 0);
+  const cases = [
+    ['[ar:A][00:01.00]Body', '[00:02.00]Embedded', 'Body', true],
+    ['[00:99]Invalid', '[00:02.00]Embedded', 'Embedded', true],
+    ['[ar:A]\n[ti:Metadata only]', '[00:02.00]Embedded', 'Embedded', true],
+    ['Untimed sidecar', '[00:02.00]Embedded', 'Embedded', true],
+    ['Untimed sidecar', 'Untimed embedded', 'Untimed sidecar', false]
+  ];
+  cases.forEach(([sidecar, embedded, expected, synced], index) => {
+    manager.applyNativeNowPlaying({ nowPlayingRevision: index + 1,
+      nowPlaying: { ...metadata('1', sidecar), lyricsEmbedded: embedded } });
+    assert.equal(manager.getHostLyrics().data.lines[0].text, expected);
+    assert.equal(manager.getHostLyrics().data.synced, synced);
+  });
 });

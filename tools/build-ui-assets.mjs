@@ -104,21 +104,28 @@ if (JSON.stringify((await readdir(path.join(output, 'images'))).sort()) !==
 }
 // Omit unavailable system presets without touching saved or imported layouts.
 const visualizerPresetsDirectory = path.join(output, 'presets', 'visualizer');
-const omittedPresetCounts = { 'Lyric Stage': 0, 'Counter Gallery': 0 };
+let lyricStageCount = 0;
+let counterGalleryCount = 0;
 for (const entry of await readdir(visualizerPresetsDirectory)) {
   if (!entry.endsWith('.json')) continue;
   const presetPath = path.join(visualizerPresetsDirectory, entry);
   const presets = JSON.parse(await readText(presetPath));
   let changed = false;
-  for (const name of ['Lyric Stage', 'Counter Gallery']) {
-    if (!Object.hasOwn(presets, name)) continue;
-    ++omittedPresetCounts[name];
+  if (Object.hasOwn(presets, 'Lyric Stage')) {
+    ++lyricStageCount;
+    if (!presets['Lyric Stage'].items.some(item => item.type === 'lyrics') ||
+        presets['Lyric Stage'].items.some(item => item.type === 'counter')) {
+      throw new Error('Review the pinned Lyric Stage items before exposing host lyrics');
+    }
+  }
+  if (Object.hasOwn(presets, 'Counter Gallery')) {
+    ++counterGalleryCount;
     changed = true;
-    delete presets[name];
+    delete presets['Counter Gallery'];
   }
   if (changed) await writeFile(presetPath, JSON.stringify(presets, null, 2) + '\n', 'utf8');
 }
-if (omittedPresetCounts['Lyric Stage'] !== 2 || omittedPresetCounts['Counter Gallery'] !== 1) {
+if (lyricStageCount !== 2 || counterGalleryCount !== 1) {
   throw new Error('The pinned Visualizer system preset set has changed');
 }
 // Shared modal/controller styling lives in the upstream library stylesheet.
@@ -404,6 +411,20 @@ if (visualizerView.split(playerMetadata).length - 1 !== 1) {
 visualizerView = visualizerView.replace(playerMetadata, `    metadata() {
         return this.uiManager.audioManager.getNowPlayingMetadata();
     }`);
+const playerLyrics = `    lyrics() {
+        const player = this.uiManager.audioPlayer;
+        if (!this.hasLyrics || !player?.ui?.container || !player.trackLyrics) return null;
+        const snapshot = player.stateManager.getStateSnapshot();
+        if (!snapshot.currentTrack) return null;
+        const data = player.trackLyrics.get(snapshot.currentTrack);
+        if (!data) return null;
+        const position = snapshot.isPlaying ? player.contextManager.getCurrentPlaybackTime() : snapshot.currentTrackPosition;
+        return { data, time: this.uiManager.audioManager.getAudiblePlaybackPosition(position, snapshot.playbackSpeed),
+            duration: snapshot.currentTrackDuration, isStopped: snapshot.isStopped };
+    }`;
+visualizerView = replaceOnce(visualizerView, playerLyrics, `    lyrics() {
+        return this.uiManager.audioManager.getHostLyrics();
+    }`);
 // mIV's project sample count is not the audible media position. Imported
 // counters retain their type and editor, but receive no position until a media clock is available.
 const counterProvider = /    counters\(now = performance\.now\(\)\) \{[\s\S]*?\n    \}\n(?=    resetCounter)/;
@@ -457,7 +478,7 @@ if (visualizerEditor.split(visualizerAddChoices).length - 1 !== 1) {
   throw new Error('Unable to locate Visualizer add-item choices');
 }
 visualizerEditor = visualizerEditor.replace(visualizerAddChoices,
-  "byLabel(ITEM_TYPES.filter(type => type !== 'lyrics' && type !== 'video' && type !== 'counter').map(type =>");
+  "byLabel(ITEM_TYPES.filter(type => type !== 'video' && type !== 'counter').map(type =>");
 const visualizerChannels = `            const channels = [['', '1–2'], ['L', 'L'], ['R', 'R'], ...Array.from({ length: 7 }, (_, i) => [\`\${i * 2 + 3}\${i * 2 + 4}\`, \`\${i * 2 + 3}–\${i * 2 + 4}\`]), ...Array.from({ length: 16 }, (_, i) => [\`\${i + 1}\`, \`\${i + 1}\`])];
             this.field(properties, this.t('visualizer.channel', 'Channel'), 'select', item.channel || '', value => { item.channel = value || null; this.changed(); }, { values: channels });`;
 if (visualizerEditor.split(visualizerChannels).length - 1 !== 1) {

@@ -413,8 +413,21 @@ const visualizerEditor = await readFile(path.join(assets, 'js', 'visualizer', 'v
 if (visualizerView.includes('ui/audio-player/') || visualizerView.includes('this.video.') ||
     visualizerView.includes('this.uiManager.audioManager.getHostTransport()') ||
     !visualizerView.includes('counters() {\n        return new Map();\n    }') ||
-    !visualizerEditor.includes("type !== 'lyrics' && type !== 'video' && type !== 'counter'")) {
+    !visualizerEditor.includes("byLabel(ITEM_TYPES.filter(type => type !== 'video' && type !== 'counter').map(type =>")) {
   throw new Error('Visualizer still exposes Counter/Video or supplies misleading project transport');
+}
+if (!visualizerView.includes('return this.uiManager.audioManager.getHostLyrics();') ||
+    !audioAdapter.includes('selectLyrics({')) {
+  throw new Error('The host lyrics provider is missing');
+}
+for (const file of await readdir(path.join(assets, 'presets', 'visualizer'))) {
+  if (!file.endsWith('.json')) continue;
+  const bundled = JSON.parse(await readFile(path.join(assets, 'presets', 'visualizer', file), 'utf8'));
+  const expected = JSON.parse(await readFile(path.join(upstreamSource, 'presets', 'visualizer', file), 'utf8'));
+  delete expected['Counter Gallery'];
+  if (JSON.stringify(bundled) !== JSON.stringify(expected)) {
+    throw new Error(`Visualizer system presets must retain host Lyrics and omit Counter Gallery: ${file}`);
+  }
 }
 if (pipelineManager.includes("from './pipeline/file-processor.js'") ||
     pipelineManager.includes('new FileProcessor(') ||

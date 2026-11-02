@@ -166,7 +166,22 @@ private:
     std::string album;
     std::string artist;
     std::string artworkDataUrl;
+    std::optional<std::uint64_t> mediaGeneration;
+    std::string lyricsSidecar;
+    std::string lyricsEmbedded;
+    std::optional<double> durationSeconds;
   };
+
+  struct PlaybackPosition {
+    std::optional<std::uint64_t> mediaGeneration;
+    bool available = false;
+    bool playing = false;
+    double positionSeconds = 0.0;
+    double rate = 1.0;
+    std::int64_t hostTimeNanoseconds = 0;
+  };
+  void appendPlaybackSnapshot(choc::value::Value &result,
+                              std::int64_t nowNanoseconds);
 
   void appendNowPlayingSnapshot(choc::value::Value &result,
                                 std::uint64_t knownRevision);
@@ -872,10 +887,11 @@ private:
   // Guards the pending automation deltas alone. The audio callback never
   // takes it, so the editor's frame-rate drain cannot stall a block.
   std::mutex automationDeltaMutex_;
-  // Transient host metadata is independent of pipeline state and never read
-  // by process(). Each UI page supplies its own revision when polling it.
+  // Transient host metadata and playback are independent of pipeline state and
+  // never read by process(). Each UI page tracks its own metadata revision.
   std::mutex nowPlayingMutex_;
   NowPlayingMetadata nowPlaying_;
+  PlaybackPosition playback_;
   std::uint64_t nowPlayingRevision_ = 1;
   std::mutex editorMutex_;
   std::mutex assetTransferMutex_;

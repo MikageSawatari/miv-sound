@@ -1,4 +1,5 @@
 import { AudioManager as BrowserAudioManager } from './js/audio-manager.js';
+import { parseLrc, selectLyrics } from './js/library/metadata/lyrics.js';
 import {
   DSP_AUTOMATION_CATALOG,
   DSP_PARAM_PACKERS,
@@ -978,6 +979,12 @@ export class AudioManager extends BrowserAudioManager {
     this.ioManager.sourceNode = fakeNode({ postMessage: noop });
     this.nowPlayingRevision = 0;
     this.nowPlayingMetadata = null;
+    this.hostLyricsData = null;
+    this.hostPlayback = null;
+    this.lyricsDisplayGeneration = 0;
+    this.hostPlaybackStale = true;
+    this.lyricsVisibilityChanged = () => this.updateHostLyricsVisibility();
+    document.addEventListener('visibilitychange', this.lyricsVisibilityChanged);
     this.hostTransport = null;
     this.telemetryTimer = setInterval(() => this.pollNativeTelemetry(), 1000 / 60);
     this.nativeContextGeneration = 0;
@@ -1025,6 +1032,34 @@ export class AudioManager extends BrowserAudioManager {
         !Object.prototype.hasOwnProperty.call(info, 'nowPlaying')) return;
     this.nowPlayingMetadata = info.nowPlaying;
     this.nowPlayingRevision = info.nowPlayingRevision;
+    this.hostLyricsData = selectLyrics({
+      sidecar: parseLrc(info.nowPlaying?.lyricsSidecar || ''),
+      embedded: parseLrc(info.nowPlaying?.lyricsEmbedded || '')
+    });
+  }
+
+  updateHostLyricsVisibility() {
+    if (!document.hidden) {
+      this.lyricsDisplayGeneration = (this.lyricsDisplayGeneration ?? 0) + 1;
+      this.hostPlaybackStale = true;
+    }
+  }
+
+  applyNativePlayback(info, displayGeneration, receivedAt = performance.now()) {
+    if (displayGeneration !== (this.lyricsDisplayGeneration ?? 0) || !info?.playback) return;
+    this.hostPlayback = { ...info.playback, receivedAt };
+    this.hostPlaybackStale = false;
+  }
+
+  getHostLyrics() {
+    const playback = this.hostPlayback;
+    const metadata = this.nowPlayingMetadata;
+    if (this.hostPlaybackStale || !this.hostLyricsData || playback?.available !== 1 ||
+        metadata?.mediaGeneration == null || metadata.mediaGeneration !== playback.mediaGeneration) return null;
+    const elapsed = playback.playing === 1 ? (performance.now() - playback.receivedAt) / 1000 : 0;
+    return { data: this.hostLyricsData,
+      time: Math.max(0, playback.positionSeconds + elapsed * playback.rate),
+      duration: metadata.durationSeconds ?? 0, isStopped: false };
   }
 
   pollNativeTelemetry() {
@@ -1050,9 +1085,11 @@ export class AudioManager extends BrowserAudioManager {
       }
       const spectrumRevision = this.nativePort.spectrumPublishedRevision;
       const runtimePipeline = [...this.getCurrentPipeline()];
+      const displayGeneration = this.lyricsDisplayGeneration ?? 0;
       const result = await window.__effetuneHostCall(hidden ? 'host/getInfo' : 'telemetry/read', {
         nowPlayingRevision: this.nowPlayingRevision
       });
+      this.applyNativePlayback(result, displayGeneration);
       this.applyNativeNowPlaying(result);
       this.applyNativeHostTransport(result);
       this.applyNativePerformanceStatus(result);
@@ -1096,9 +1133,11 @@ export class AudioManager extends BrowserAudioManager {
       // announcement is the native side's only boundary for a touch the dying
       // page opened on its way out and can no longer release. Every other
       // host/getInfo is a poll and says nothing about which context sent it.
+      const displayGeneration = this.lyricsDisplayGeneration ?? 0;
       const info = await window.__effetuneHostCall('host/getInfo', {
         startup: true, nowPlayingRevision: 0
       });
+      this.applyNativePlayback(info, displayGeneration);
       this.applyNativeNowPlaying(info);
       this.applyNativeHostTransport(info);
       this.contextManager.audioContext = fakeAudioContext(info.engineSampleRate, info.channels);

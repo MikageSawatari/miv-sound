@@ -6,6 +6,8 @@
 #include "choc/text/choc_JSON.h"
 
 #include <array>
+#include <cmath>
+#include <limits>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -13,6 +15,17 @@
 #include <vector>
 
 #include "../support/webview_test_lifetime.h"
+
+namespace effetune::vst::plugin {
+class PluginProcessorTestAccess {
+public:
+  static choc::value::Value playbackAt(EffeTuneProcessor &processor, const std::int64_t now) {
+    auto result = choc::value::createObject({});
+    processor.appendPlaybackSnapshot(result, now);
+    return choc::value::Value(result["playback"]);
+  }
+};
+}
 
 namespace {
 using namespace Steinberg;
@@ -239,6 +252,126 @@ void testAtomicTransportValidation() {
   expect(processor->terminate() == kResultOk, "terminate validation processor");
   expect(readSnapshot(*processor)["nowPlaying"].isVoid(), "terminate clears the transient snapshot");
 }
+
+void testHostLyricsMetadata() {
+  auto processor = makeProcessor();
+  auto message = makeMessage();
+  auto *attributes = message->getAttributes();
+  attributes->setInt("mediaGeneration", -1); // All u64 bits survive the VST signed carrier.
+  const std::u16string maximum(262142, u'x');
+  const auto lyrics = maximum + u"\U0001f3b5";
+  attributes->setString("lyricsSidecar", lyrics.c_str());
+  attributes->setString("lyricsEmbedded", lyrics.c_str());
+  attributes->setFloat("durationSeconds", 60.0);
+  expect(processor->notify(message.get()) == kResultOk, "accept both maximum lyric strings without artwork or title");
+  const auto snapshot = readSnapshot(*processor);
+  const auto metadata = snapshot["nowPlaying"];
+  expect(metadata["mediaGeneration"].get<std::string>() == "18446744073709551615",
+         "UI bridge preserves all generation bits");
+  expect(metadata["lyricsSidecar"].get<std::string>().size() == 262146 &&
+         metadata["lyricsEmbedded"].get<std::string>().size() == 262146 &&
+         metadata["durationSeconds"].get<double>() == 60.0, "own both lyric strings and duration");
+  expect(!readSnapshot(*processor, "telemetry/read", revisionOf(snapshot)).hasObjectMember("nowPlaying"),
+         "unchanged revision omits lyrics too");
+  for (const auto *key : {"lyricsSidecar", "lyricsEmbedded"}) {
+    auto invalid = makeMessage();
+    const std::u16string tooLong(262145, u'x');
+    invalid->getAttributes()->setString(key, tooLong.c_str());
+    expectRejected(*processor, invalid.get(), "over-limit lyrics preserve snapshot");
+    const std::array<TChar, 2> surrogate{static_cast<TChar>(0xdc00), 0};
+    invalid->getAttributes()->setString(key, surrogate.data());
+    expectRejected(*processor, invalid.get(), "ill-formed lyrics preserve snapshot");
+    invalid->getAttributes()->setInt(key, 1);
+    expectRejected(*processor, invalid.get(), "wrong lyric type preserves snapshot");
+  }
+  for (const auto value : {-1.0, std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::quiet_NaN()}) {
+    auto invalid = makeMessage();
+    invalid->getAttributes()->setFloat("durationSeconds", value);
+    expectRejected(*processor, invalid.get(), "invalid duration preserves snapshot");
+  }
+  for (const auto *key : {"durationSeconds", "mediaGeneration"}) {
+    auto invalid = makeMessage();
+    invalid->getAttributes()->setString(key, STR16("wrong type"));
+    expectRejected(*processor, invalid.get(), "wrong optional scalar type preserves snapshot");
+  }
+  auto replacement = makeMessage();
+  replacement->getAttributes()->setString("title", STR16("No lyrics"));
+  expect(processor->notify(replacement.get()) == kResultOk, "accept legacy replacement");
+  const auto cleared = choc::value::Value(readSnapshot(*processor)["nowPlaying"]);
+  expect(cleared["lyricsSidecar"].get<std::string>().empty() &&
+         cleared["lyricsEmbedded"].get<std::string>().empty() &&
+         !cleared.hasObjectMember("mediaGeneration") && !cleared.hasObjectMember("durationSeconds"),
+         "replacement clears all omitted lyrics attributes");
+  expect(processor->terminate() == kResultOk, "terminate host lyrics processor");
+}
+
+void testPlaybackPosition() {
+  using effetune::vst::plugin::PluginProcessorTestAccess;
+  auto processor = makeProcessor();
+  expect(readSnapshot(*processor)["playback"]["available"].get<int>() == 0, "ordinary hosts have no position");
+  auto message = makeMessage("EffeTune.PlaybackPosition");
+  auto *attributes = message->getAttributes();
+  attributes->setInt("mediaGeneration", 42);
+  attributes->setInt("available", 1);
+  attributes->setInt("playing", 1);
+  attributes->setFloat("positionSeconds", 10.0);
+  attributes->setFloat("rate", 2.0);
+  attributes->setInt("hostTimeNanoseconds", 1000000000);
+  expect(processor->notify(message.get()) == kResultOk, "accept playing position");
+  expect(PluginProcessorTestAccess::playbackAt(*processor, 2500000000)["positionSeconds"].get<double>() == 13.0,
+         "native extrapolation uses supplied clock and rate without subtracting latency");
+  const auto before = choc::json::toString(PluginProcessorTestAccess::playbackAt(*processor, 2500000000));
+  const auto reject = [&](IMessage *invalid) {
+    expect(processor->notify(invalid) == kInvalidArgument, "reject invalid position");
+    expect(choc::json::toString(PluginProcessorTestAccess::playbackAt(*processor, 2500000000)) == before,
+           "invalid position retains complete previous snapshot");
+  };
+  auto incomplete = makeMessage("EffeTune.PlaybackPosition");
+  reject(incomplete.get());
+  auto noList = owned(new IncompleteMessage("EffeTune.PlaybackPosition"));
+  reject(noList.get());
+  for (const auto *key : {"mediaGeneration", "available", "playing", "positionSeconds", "rate", "hostTimeNanoseconds"}) {
+    auto invalid = makeMessage("EffeTune.PlaybackPosition");
+    auto *fields = invalid->getAttributes();
+    fields->setInt("mediaGeneration", 42); fields->setInt("available", 1); fields->setInt("playing", 1);
+    fields->setFloat("positionSeconds", 10.0); fields->setFloat("rate", 2.0);
+    fields->setInt("hostTimeNanoseconds", 1000000000);
+    fields->setString(key, STR16("wrong type"));
+    reject(invalid.get());
+  }
+  for (const auto *key : {"positionSeconds", "rate"}) {
+    const auto original = std::string_view(key) == "rate" ? 2.0 : 10.0;
+    for (const auto value : {-1.0, std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::quiet_NaN()}) {
+      attributes->setFloat(key, value); reject(message.get());
+    }
+    attributes->setFloat(key, original);
+  }
+  attributes->setFloat("rate", 0.0); reject(message.get()); attributes->setFloat("rate", 2.0);
+  attributes->setInt("available", 2); reject(message.get()); attributes->setInt("available", 1);
+  attributes->setInt("playing", 2); reject(message.get()); attributes->setInt("playing", 1);
+  attributes->setInt("hostTimeNanoseconds", -1); reject(message.get());
+  attributes->setInt("hostTimeNanoseconds", 1000000000);
+  attributes->setInt("playing", 0);
+  expect(processor->notify(message.get()) == kResultOk, "accept paused position");
+  expect(PluginProcessorTestAccess::playbackAt(*processor, 9000000000)["positionSeconds"].get<double>() == 10.0,
+         "paused position never advances");
+  const auto host = choc::value::Value(readSnapshot(*processor)["playback"]);
+  const auto telemetry = choc::value::Value(readSnapshot(*processor, "telemetry/read")["playback"]);
+  expect(choc::json::toString(host) == choc::json::toString(telemetry) &&
+         host["mediaGeneration"].get<std::string>() == "42", "both routes carry the same playback snapshot");
+  attributes->setInt("mediaGeneration", 43);
+  attributes->setInt("available", 0);
+  attributes->setString("rate", STR16("ignored while unavailable"));
+  expect(processor->notify(message.get()) == kResultOk, "unavailable ignores other position fields");
+  const auto unavailable = choc::value::Value(readSnapshot(*processor)["playback"]);
+  expect(unavailable["available"].get<int>() == 0 && unavailable["positionSeconds"].get<double>() == 0.0 &&
+         unavailable["mediaGeneration"].get<std::string>() == "43", "unavailable removes old position");
+  expect(processor->terminate() == kResultOk, "terminate playback processor");
+  expect(!readSnapshot(*processor)["playback"].hasObjectMember("mediaGeneration"), "termination clears position");
+}
+
 } // namespace
 
 int runTestBody() {
@@ -250,6 +383,10 @@ int runTestBody() {
     testReplacementOwnershipAndPolling();
     effetune::vst::testing::checkWebViewTestDeadline();
     testAtomicTransportValidation();
+    effetune::vst::testing::checkWebViewTestDeadline();
+    testHostLyricsMetadata();
+    effetune::vst::testing::checkWebViewTestDeadline();
+    testPlaybackPosition();
     std::cout << "EffeTune Now Playing metadata tests passed\n";
     return 0;
   } catch (const std::exception &error) {

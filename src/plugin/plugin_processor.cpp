@@ -158,10 +158,11 @@ inline constexpr std::size_t kMaximumNowPlayingTextUnits = 4096;
 inline constexpr std::uint32_t kMaximumNowPlayingArtworkBytes = 8u * 1024u * 1024u;
 
 [[nodiscard]] bool readNowPlayingString(IAttributeList &attributes,
-                                       const char *key, std::string &value) {
-  std::array<TChar, kMaximumNowPlayingTextUnits + 1> characters{};
+                                       const char *key, std::string &value,
+                                       const std::size_t maximumUnits = kMaximumNowPlayingTextUnits) {
+  std::vector<TChar> characters(maximumUnits + 1);
   if (attributes.getString(key, characters.data(),
-                           static_cast<uint32>(sizeof(characters))) != kResultOk) {
+                           static_cast<uint32>(characters.size() * sizeof(TChar))) != kResultOk) {
     // Missing fields clear the snapshot; a known field of the wrong type
     // rejects it rather than silently clearing the previous track.
     int64 integer = 0;
@@ -189,6 +190,41 @@ inline constexpr std::uint32_t kMaximumNowPlayingArtworkBytes = 8u * 1024u * 102
   }
   value = utf8FromTChars(characters.data());
   return true;
+}
+
+// IAttributeList has no contains/type query. Probe the other VST types to
+// distinguish an omitted optional field from a present field of the wrong type.
+[[nodiscard]] bool readOptionalInteger(IAttributeList &attributes, const char *key,
+                                       std::optional<int64> &value) {
+  int64 integer = 0;
+  if (attributes.getInt(key, integer) == kResultOk) {
+    value = integer;
+    return true;
+  }
+  TChar text = 0;
+  double floating = 0.0;
+  const void *binary = nullptr;
+  uint32 bytes = 0;
+  return attributes.getString(key, &text, sizeof(text)) != kResultOk &&
+         attributes.getFloat(key, floating) != kResultOk &&
+         attributes.getBinary(key, binary, bytes) != kResultOk;
+}
+
+[[nodiscard]] bool readOptionalFloat(IAttributeList &attributes, const char *key,
+                                     std::optional<double> &value) {
+  double floating = 0.0;
+  if (attributes.getFloat(key, floating) == kResultOk) {
+    if (!std::isfinite(floating)) return false;
+    value = floating;
+    return true;
+  }
+  TChar text = 0;
+  int64 integer = 0;
+  const void *binary = nullptr;
+  uint32 bytes = 0;
+  return attributes.getString(key, &text, sizeof(text)) != kResultOk &&
+         attributes.getInt(key, integer) != kResultOk &&
+         attributes.getBinary(key, binary, bytes) != kResultOk;
 }
 
 [[nodiscard]] std::string trimmed(const std::string &value) {
@@ -473,6 +509,7 @@ tresult PLUGIN_API EffeTuneProcessor::terminate() {
   {
     std::scoped_lock metadataLock(nowPlayingMutex_);
     nowPlaying_ = {};
+    playback_ = {};
     ++nowPlayingRevision_;
   }
   std::scoped_lock resources(processingResourcesMutex_);
@@ -488,6 +525,37 @@ tresult PLUGIN_API EffeTuneProcessor::notify(IMessage *message) {
   if (message == nullptr || message->getMessageID() == nullptr) {
     return kInvalidArgument;
   }
+  if (FIDStringsEqual(message->getMessageID(), "EffeTune.PlaybackPosition")) {
+    try {
+      auto *attributes = message->getAttributes();
+      std::optional<int64> generation, available, playing, hostTime;
+      if (attributes == nullptr ||
+          !readOptionalInteger(*attributes, "mediaGeneration", generation) || !generation ||
+          !readOptionalInteger(*attributes, "available", available) || !available ||
+          (*available != 0 && *available != 1)) return kInvalidArgument;
+      PlaybackPosition replacement;
+      replacement.mediaGeneration = static_cast<std::uint64_t>(*generation);
+      replacement.available = *available == 1;
+      if (replacement.available) {
+        std::optional<double> position, rate;
+        if (!readOptionalInteger(*attributes, "playing", playing) || !playing ||
+            (*playing != 0 && *playing != 1) ||
+            !readOptionalFloat(*attributes, "positionSeconds", position) || !position || *position < 0.0 ||
+            !readOptionalFloat(*attributes, "rate", rate) || !rate || *rate <= 0.0 ||
+            !readOptionalInteger(*attributes, "hostTimeNanoseconds", hostTime) || !hostTime || *hostTime < 0)
+          return kInvalidArgument;
+        replacement.playing = *playing == 1;
+        replacement.positionSeconds = *position;
+        replacement.rate = *rate;
+        replacement.hostTimeNanoseconds = *hostTime;
+      }
+      std::scoped_lock metadataLock(nowPlayingMutex_);
+      playback_ = replacement;
+      return kResultOk;
+    } catch (const std::exception &) {
+      return kResultFalse;
+    }
+  }
   if (!FIDStringsEqual(message->getMessageID(), "EffeTune.NowPlaying")) {
     if (FIDStringsEqual(message->getMessageID(), "TextMessage") &&
         message->getAttributes() == nullptr) {
@@ -500,6 +568,15 @@ tresult PLUGIN_API EffeTuneProcessor::notify(IMessage *message) {
     NowPlayingMetadata replacement;
     if (auto *attributes = message->getAttributes(); attributes != nullptr) {
       std::string mimeType;
+      std::optional<int64> generation;
+      if (!readOptionalInteger(*attributes, "mediaGeneration", generation) ||
+          !readOptionalFloat(*attributes, "durationSeconds", replacement.durationSeconds) ||
+          (replacement.durationSeconds && *replacement.durationSeconds < 0.0) ||
+          !readNowPlayingString(*attributes, "lyricsSidecar", replacement.lyricsSidecar, 262144) ||
+          !readNowPlayingString(*attributes, "lyricsEmbedded", replacement.lyricsEmbedded, 262144)) {
+        return kInvalidArgument;
+      }
+      if (generation) replacement.mediaGeneration = static_cast<std::uint64_t>(*generation);
       if (!readNowPlayingString(*attributes, "title", replacement.title) ||
           !readNowPlayingString(*attributes, "album", replacement.album) ||
           !readNowPlayingString(*attributes, "artist", replacement.artist) ||
@@ -551,7 +628,9 @@ void EffeTuneProcessor::appendNowPlayingSnapshot(
     return;
   }
   if (nowPlaying_.title.empty() && nowPlaying_.album.empty() &&
-      nowPlaying_.artist.empty() && nowPlaying_.artworkDataUrl.empty()) {
+      nowPlaying_.artist.empty() && nowPlaying_.artworkDataUrl.empty() &&
+      !nowPlaying_.mediaGeneration && nowPlaying_.lyricsSidecar.empty() &&
+      nowPlaying_.lyricsEmbedded.empty() && !nowPlaying_.durationSeconds) {
     result.addMember("nowPlaying", choc::value::Value{});
     return;
   }
@@ -559,6 +638,14 @@ void EffeTuneProcessor::appendNowPlayingSnapshot(
   metadata.addMember("title", nowPlaying_.title);
   metadata.addMember("album", nowPlaying_.album);
   metadata.addMember("artist", nowPlaying_.artist);
+  // The VST integer carries all u64 bits. Decimal strings preserve equality in
+  // JavaScript even above Number.MAX_SAFE_INTEGER (internal UI bridge only).
+  if (nowPlaying_.mediaGeneration)
+    metadata.addMember("mediaGeneration", std::to_string(*nowPlaying_.mediaGeneration));
+  metadata.addMember("lyricsSidecar", nowPlaying_.lyricsSidecar);
+  metadata.addMember("lyricsEmbedded", nowPlaying_.lyricsEmbedded);
+  if (nowPlaying_.durationSeconds)
+    metadata.addMember("durationSeconds", *nowPlaying_.durationSeconds);
   auto artwork = choc::value::createEmptyArray();
   if (!nowPlaying_.artworkDataUrl.empty()) {
     auto image = choc::value::createObject({});
@@ -567,6 +654,26 @@ void EffeTuneProcessor::appendNowPlayingSnapshot(
   }
   metadata.addMember("artwork", std::move(artwork));
   result.addMember("nowPlaying", std::move(metadata));
+}
+
+void EffeTuneProcessor::appendPlaybackSnapshot(choc::value::Value &result,
+                                               const std::int64_t nowNanoseconds) {
+  std::scoped_lock metadataLock(nowPlayingMutex_);
+  auto playback = choc::value::createObject({});
+  if (playback_.mediaGeneration)
+    playback.addMember("mediaGeneration", std::to_string(*playback_.mediaGeneration));
+  playback.addMember("available", playback_.available ? 1 : 0);
+  playback.addMember("playing", playback_.playing ? 1 : 0);
+  auto position = playback_.positionSeconds;
+  if (playback_.available && playback_.playing) {
+    // MSVC steady_clock and the host's QPC-derived nanoseconds are assumed to share the same epoch.
+    position += (static_cast<double>(nowNanoseconds) -
+                 static_cast<double>(playback_.hostTimeNanoseconds)) * 1.0e-9 * playback_.rate;
+  }
+  if (position > std::numeric_limits<double>::max()) position = std::numeric_limits<double>::max();
+  playback.addMember("positionSeconds", std::max(0.0, position));
+  playback.addMember("rate", playback_.rate);
+  result.addMember("playback", std::move(playback));
 }
 
 tresult PLUGIN_API EffeTuneProcessor::setActive(const TBool state) {
@@ -4199,6 +4306,8 @@ std::string EffeTuneProcessor::handleUiMessage(const std::string_view request) {
     appendAutomationDeltas(result);
     appendDeferredDiagnostics(result);
     appendNowPlayingSnapshot(result, message.nowPlayingRevision);
+    appendPlaybackSnapshot(result, std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
     return choc::json::toString(result);
   }
 
@@ -4356,6 +4465,8 @@ std::string EffeTuneProcessor::handleUiMessage(const std::string_view request) {
     appendAutomationDeltas(result);
     appendDeferredDiagnostics(result);
     appendNowPlayingSnapshot(result, message.nowPlayingRevision);
+    appendPlaybackSnapshot(result, std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count());
     return choc::json::toString(result);
   }
 
