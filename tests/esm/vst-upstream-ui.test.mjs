@@ -127,7 +127,7 @@ test('Visualizer add-item choices include host Lyrics and omit Video and Counter
   } finally { globalThis.document = previousDocument; }
 });
 
-test('bundled Visualizer system presets retain Lyric Stage and omit Counter Gallery across all aspects', async () => {
+test('bundled Visualizer presets put mIV Original first and retain the supported upstream order', async () => {
   const sourceDirectory = new URL('../../external/effetune/presets/visualizer/', import.meta.url);
   const { VisualizerPresetStore } = await assetModule('js/visualizer/visualizer-preset-store.js');
   const { ASPECT_FILES } = await assetModule('js/visualizer/visualizer-model.js');
@@ -135,6 +135,8 @@ test('bundled Visualizer system presets retain Lyric Stage and omit Counter Gall
     ok: true, json: async () => JSON.parse(await readFile(url, 'utf8'))
   }) });
   const bundled = await store.loadSystemPresets();
+  const mivOriginal = JSON.parse(await readFile(new URL(
+    '../../ui-shim/presets/miv-original.json', import.meta.url), 'utf8'));
   const files = (await readdir(sourceDirectory)).filter(file => file.endsWith('.json')).sort();
   assert.deepEqual((await readdir(path.join(assets, 'presets/visualizer')))
     .filter(file => file.endsWith('.json')).sort(), files);
@@ -146,9 +148,31 @@ test('bundled Visualizer system presets retain Lyric Stage and omit Counter Gall
       assert.ok(!expected['Lyric Stage'].items.some(item => item.type === 'counter'));
     }
     const actual = JSON.parse(await assetText(`presets/visualizer/${file}`));
-    assert.deepEqual(actual, expected, `${file} retains all other presets, including Lyric Stage`);
     const aspect = Object.keys(ASPECT_FILES).find(aspect => ASPECT_FILES[aspect] === file);
-    assert.deepEqual(bundled[aspect], expected);
+    const withOriginal = { 'mIV Original': mivOriginal[aspect], ...expected };
+    assert.deepEqual(Object.keys(actual), Object.keys(withOriginal));
+    assert.deepEqual(actual, withOriginal, `${file} retains all supported upstream presets, including Lyric Stage`);
+    assert.deepEqual(bundled[aspect], withOriginal);
+  }
+});
+
+test('Visualizer initialization chooses mIV Original only without a saved current layout', async () => {
+  const { VisualizerView } = await assetModule('js/visualizer/visualizer-view.js');
+  const { normalizeLayout, layoutsEqual } = await assetModule('js/visualizer/visualizer-model.js');
+  const systems = { '16:9': JSON.parse(await assetText('presets/visualizer/16x9.json')) };
+  const savedLayout = normalizeLayout(systems['16:9']['Harmony Lab']);
+  for (const saved of [null, savedLayout]) {
+    let selected;
+    const view = {
+      store: { loadCurrent: async () => saved, loadSystemPresets: async () => systems },
+      setLayout(layout) { selected = normalizeLayout(layout); },
+      fail(error) { throw error; }
+    };
+    await VisualizerView.prototype.initialize.call(view);
+    const expected = saved || systems['16:9']['mIV Original'];
+    assert.deepEqual(selected, expected);
+    assert.equal(layoutsEqual(selected, expected), true);
+    assert.equal(view.systems, systems);
   }
 });
 

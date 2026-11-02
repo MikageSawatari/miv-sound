@@ -389,7 +389,8 @@ EffeTuneProcessor::EffeTuneProcessor()
   preserveMissingPipelineB_ = true;
 #endif
   std::string config;
-  if (configStore_.load(config)) {
+  std::string configError;
+  if (configStore_.loadForStartup(config, &configError)) {
     try {
       const auto parsed = choc::json::parse(config);
       if (parsed.isObject()) {
@@ -401,6 +402,13 @@ EffeTuneProcessor::EffeTuneProcessor()
       }
     } catch (const choc::json::ParseError &) {
     }
+  }
+  if (!configError.empty()) {
+#if defined(_WIN32)
+    OutputDebugStringA(("Unable to load or persist startup UI config: " + configError + "\n").c_str());
+#else
+    std::fprintf(stderr, "Unable to load or persist startup UI config: %s\n", configError.c_str());
+#endif
   }
 }
 

@@ -424,10 +424,18 @@ if (!visualizerView.includes('lyricsSeekTime() {\n        return null;\n    }') 
     visualizerView.includes('this.renderer.lyricsSeekTime(')) {
   throw new Error('Receive-only host lyrics must not offer a seek action');
 }
-for (const file of await readdir(path.join(assets, 'presets', 'visualizer'))) {
-  if (!file.endsWith('.json')) continue;
+const mivOriginal = JSON.parse(await readFile(
+  path.join(projectRoot, 'ui-shim', 'presets', 'miv-original.json'), 'utf8'));
+for (const aspect of ['16:9', '21:9', '4:3', '1:1', '9:16']) {
+  const file = aspect.replace(':', 'x') + '.json';
   const bundled = JSON.parse(await readFile(path.join(assets, 'presets', 'visualizer', file), 'utf8'));
   const expected = JSON.parse(await readFile(path.join(upstreamSource, 'presets', 'visualizer', file), 'utf8'));
+  if (Object.hasOwn(expected, 'mIV Original') || Object.keys(bundled)[0] !== 'mIV Original' ||
+      bundled['mIV Original']?.aspect !== aspect ||
+      JSON.stringify(bundled['mIV Original']) !== JSON.stringify(mivOriginal[aspect])) {
+    throw new Error(`mIV Original must be first and match its source aspect: ${file}`);
+  }
+  delete bundled['mIV Original'];
   delete expected['Counter Gallery'];
   if (JSON.stringify(bundled) !== JSON.stringify(expected)) {
     throw new Error(`Visualizer system presets must retain host Lyrics and omit Counter Gallery: ${file}`);

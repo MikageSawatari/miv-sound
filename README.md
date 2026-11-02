@@ -26,6 +26,21 @@ The script returns 2/3/4 for configure/build/test failures (1 for setup).
 Output: `build/windows-release/VST3/Release/mIV Sound.vst3`.
 CTest supplies separate disposable `MIV_SOUND_DATA_DIR` paths for tests.
 
+## mIV Original Visualizer
+
+`ui-shim/presets/miv-original.json` defines **mIV Original** for all five aspect
+ratios. The asset build inserts it first in each system preset file, with piano
+roll notes, artwork and track details, a spectrum, and a two-line lyrics caption.
+The caption and its backplate disappear when lyrics are unavailable.
+
+Before creating a WebView, mIV Sound checks for both `plugin/config.json` and
+the `webview/` profile under `MIV_SOUND_DATA_DIR`. Only when both are absent does
+it save Visualizer as the startup view. If saving fails, it logs the failure and
+uses Visualizer for that session. Existing config and saved layouts are never
+changed by this default. Without a saved layout, Visualizer loads the first
+16:9 system preset, mIV Original. The tour does not start automatically in this
+view; it remains available from **Settings → Take the tour**.
+
 The upstream README is retained below for reference.
 
 ---

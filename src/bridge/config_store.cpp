@@ -52,6 +52,23 @@ bool ConfigStore::load(std::string &content, std::string *error) const {
   return true;
 }
 
+bool ConfigStore::loadForStartup(std::string &content, std::string *error) const {
+  if (error != nullptr) error->clear();
+  if (!path_.empty()) {
+    std::error_code configError, profileError;
+    const bool configExists = std::filesystem::exists(path_, configError);
+    const bool profileExists = std::filesystem::exists(
+        path_.parent_path().parent_path() / "webview", profileError);
+    // Inaccessible storage is not evidence of a new user.
+    if (!configExists && !profileExists && !configError && !profileError) {
+      content = R"({"startupView":"visualizer"})";
+      (void)save(content, error);
+      return true;
+    }
+  }
+  return load(content, error);
+}
+
 bool ConfigStore::save(const std::string_view content, std::string *error) const {
   if (path_.empty()) {
     setError(error, kDataDirectoryError);

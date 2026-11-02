@@ -12,6 +12,9 @@ public:
   explicit ConfigStore(std::filesystem::path path);
 
   [[nodiscard]] bool load(std::string &content, std::string *error = nullptr) const;
+  // Call before creating a WebView. A persistence failure still returns the
+  // first-run config for this session and reports the failure through error.
+  [[nodiscard]] bool loadForStartup(std::string &content, std::string *error = nullptr) const;
   [[nodiscard]] bool save(std::string_view content, std::string *error = nullptr) const;
   [[nodiscard]] const std::filesystem::path &path() const noexcept { return path_; }
 

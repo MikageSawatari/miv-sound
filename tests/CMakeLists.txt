@@ -10,6 +10,16 @@ endif()
 
 add_test(NAME effetune_vst_unit_tests COMMAND effetune_vst_unit_tests)
 
+add_executable(miv_startup_config_tests unit/config_store_startup_tests.cpp)
+target_link_libraries(miv_startup_config_tests PRIVATE effetune_engine)
+target_compile_features(miv_startup_config_tests PRIVATE cxx_std_20)
+if(MSVC)
+  target_compile_options(miv_startup_config_tests PRIVATE /W4 /WX /utf-8)
+else()
+  target_compile_options(miv_startup_config_tests PRIVATE -Wall -Wextra -Wpedantic -Werror)
+endif()
+add_test(NAME miv_startup_config_tests COMMAND miv_startup_config_tests)
+
 add_executable(effetune_upstream_integration_tests unit/upstream_integration_tests.cpp)
 target_link_libraries(effetune_upstream_integration_tests PRIVATE effetune_engine)
 target_include_directories(effetune_upstream_integration_tests PRIVATE
@@ -231,6 +241,9 @@ if(WIN32 AND TARGET effetune_ui_assets)
 endif()
 
 if(TARGET effetune_ui_assets)
+  add_test(NAME miv_original_visualizer_tests
+    COMMAND "${EFFETUNE_NODE_EXECUTABLE}" --test
+            "${PROJECT_SOURCE_DIR}/tests/esm/miv-original-visualizer.test.mjs")
   add_test(NAME effetune_json_storage_ui_compatibility
     COMMAND "${EFFETUNE_NODE_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/esm/json-storage-compatibility.test.mjs"
       --assets "${CMAKE_BINARY_DIR}/webview-assets" --fixtures "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/json-storage")

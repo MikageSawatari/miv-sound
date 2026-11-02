@@ -128,6 +128,19 @@ for (const entry of await readdir(visualizerPresetsDirectory)) {
 if (lyricStageCount !== 2 || counterGalleryCount !== 1) {
   throw new Error('The pinned Visualizer system preset set has changed');
 }
+const mivOriginal = JSON.parse(await readText(
+  path.join(projectRoot, 'ui-shim', 'presets', 'miv-original.json')));
+for (const aspect of ['16:9', '21:9', '4:3', '1:1', '9:16']) {
+  if (!Object.hasOwn(mivOriginal, aspect) || mivOriginal[aspect]?.aspect !== aspect) {
+    throw new Error(`Missing or mismatched mIV Original aspect: ${aspect}`);
+  }
+  const presetPath = path.join(visualizerPresetsDirectory, aspect.replace(':', 'x') + '.json');
+  const presets = JSON.parse(await readText(presetPath));
+  if (Object.hasOwn(presets, 'mIV Original')) {
+    throw new Error(`Upstream already defines mIV Original: ${aspect}`);
+  }
+  await writeFile(presetPath, JSON.stringify({ 'mIV Original': mivOriginal[aspect], ...presets }, null, 2) + '\n', 'utf8');
+}
 // Shared modal/controller styling lives in the upstream library stylesheet.
 for (const entry of ['effetune-mobile.css', 'pipeline-analyzer.css']) {
   await rm(path.join(output, 'css', entry), { force: true });
