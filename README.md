@@ -52,9 +52,10 @@ changed by this default. Without a saved layout, Visualizer loads the first
 view; it remains available from **Settings → Take the tour**.
 Rejected initialization writes no first-run config. Editor creation and attachment
 are refused until initialization succeeds.
-Browser microphone recovery is excluded from the VST UI; audio comes from the
-host. On Windows, WebView2 microphone and camera permissions are denied without
-a prompt and logged to debugger output. Other permissions keep their existing
+Browser microphone acquisition is refused at the VST UI's shared input boundary;
+audio comes from the host. Page-visibility tracking and display-DSP gating retain
+their upstream behavior. On Windows, WebView2 microphone and camera permissions
+are denied without a prompt and logged to debugger output. Other permissions keep their existing
 behavior, including CHOC's clipboard-read allowance.
 
 The upstream README is retained below for reference.

@@ -210,16 +210,6 @@ await cp(path.join(projectRoot, 'ui-shim', 'vendor', 'jszip-3.10.2.min.js'),
 
 const appPath = path.join(output, 'js', 'app.js');
 let app = await readText(appPath);
-// The host owns input and lifecycle recovery. The browser's focus/pageshow
-// recovery treats the absent microphone as a lost input and reacquires it.
-const browserAudioLifecycle = /        const powerController = this\.audioManager\.powerPolicyController;[\s\S]*?\n        \/\/ Handle audio device changes[^\n]*\n        if \(navigator\.mediaDevices[\s\S]*?\n        \}\n(?=    \}\n)/;
-app = replaceOnce(app, browserAudioLifecycle, `        document.addEventListener('visibilitychange', () => {
-            if (document.hidden) this.uiManager.flushPipelineStateToLocalStorage?.();
-        }, true);
-        window.addEventListener?.('pagehide', () => {
-            this.uiManager.flushPipelineStateToLocalStorage?.();
-        }, true);
-`);
 const originalImport = `import { AudioManager } from './audio-manager.js';`;
 if (!app.includes(originalImport)) {
   throw new Error('Unable to locate the AudioManager import in js/app.js');
@@ -997,9 +987,6 @@ for (const localeFile of await readdir(localesPath)) {
 
 const browserAudioManagerPath = path.join(output, 'js', 'audio-manager.js');
 let browserAudioManager = await readText(browserAudioManagerPath);
-browserAudioManager = replaceOnce(browserAudioManager,
-  '            settings: window.appConfig?.powerSaving,',
-  '            enabled: false, // Native VST audio never owns browser input or power recovery.\n            settings: window.appConfig?.powerSaving,');
 const audioEncoderImport = `import { AudioEncoder } from './audio/audio-encoder.js';\n`;
 if (browserAudioManager.includes(audioEncoderImport)) {
   browserAudioManager = browserAudioManager.replace(audioEncoderImport, '');
@@ -1030,6 +1017,21 @@ browserAudioManager = browserAudioManager.replace(offlineProcessMethod,
     /**
      * Cancel the current offline audio processing operation`);
 await writeFile(browserAudioManagerPath, browserAudioManager, 'utf8');
+
+// Initial microphone input and every reacquisition share this one boundary.
+// Keep lifecycle/page visibility and display-DSP gating untouched; only browser
+// capture is unavailable because the VST processor supplies the audio.
+const audioIoPath = path.join(output, 'js', 'audio', 'audio-io-manager.js');
+let audioIo = await readText(audioIoPath);
+audioIo = replaceOnce(audioIo,
+  /    _getUserMediaWithTimeout\(constraints, ms = 5000\) \{[\s\S]*?\n    \}\n/,
+  `    _getUserMediaWithTimeout() {
+        return Promise.reject(Object.assign(new Error('Browser audio input is unavailable in the VST UI'), {
+            name: 'NotSupportedError'
+        }));
+    }
+`);
+await writeFile(audioIoPath, audioIo, 'utf8');
 
 const configIntegrationPath = path.join(output, 'js', 'electron', 'configIntegration.js');
 let configIntegration = await readText(configIntegrationPath);

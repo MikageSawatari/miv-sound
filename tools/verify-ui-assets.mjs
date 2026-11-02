@@ -29,10 +29,18 @@ const presetIntegration = await readFile(
 const pipelineAiDialog = await readFile(
   path.join(assets, 'js', 'ui', 'pipeline', 'pipeline-ai-dialog.js'), 'utf8');
 const browserAudioManager = await readFile(path.join(assets, 'js', 'audio-manager.js'), 'utf8');
-if (app.includes('resumeAudioFromInteraction') || app.includes('requestResumeFromUserInteraction') ||
-    app.includes("navigator.mediaDevices.addEventListener('devicechange'") ||
-    !browserAudioManager.includes('enabled: false, // Native VST audio never owns browser input or power recovery.')) {
-  throw new Error('The VST UI must not run browser microphone/power recovery on focus or visibility changes');
+const upstreamApp = (await readFile(path.join(upstreamSource, 'js', 'app.js'), 'utf8')).replaceAll('\r\n', '\n');
+const upstreamAudioManager = await readFile(path.join(upstreamSource, 'js', 'audio-manager.js'), 'utf8');
+const lifecycleMethod = text => text.match(/    setupEventListeners\(\) \{[\s\S]*?\n    \}/)?.[0];
+const powerConstruction = text => text.replaceAll('\r\n', '\n').match(
+  /        this\.powerPolicyController = new PowerPolicyController\(this, \{[\s\S]*?\n        \}\);/)?.[0];
+const audioIo = await readFile(path.join(assets, 'js', 'audio', 'audio-io-manager.js'), 'utf8');
+if (!lifecycleMethod(upstreamApp) || lifecycleMethod(app) !== lifecycleMethod(upstreamApp) ||
+    !powerConstruction(upstreamAudioManager) || powerConstruction(browserAudioManager) !== powerConstruction(upstreamAudioManager) ||
+    /navigator\.mediaDevices\.getUserMedia\s*\(/.test(audioIo) ||
+    !audioIo.includes("name: 'NotSupportedError'") ||
+    !audioIo.includes('_getUserMediaWithTimeout() {')) {
+  throw new Error('The VST UI must preserve lifecycle/display-DSP policy while refusing browser input acquisition');
 }
 const pipelineManager = await readFile(path.join(assets, 'js', 'ui', 'pipeline-manager.js'), 'utf8');
 const uiEventHandler = await readFile(
@@ -919,6 +927,9 @@ while (pendingModules.length > 0) {
   if (visitedModules.has(modulePath)) continue;
   visitedModules.add(modulePath);
   const source = await readFile(modulePath, 'utf8');
+  if (/\.\s*getUserMedia\s*\(/.test(source)) {
+    throw new Error(`A reachable VST module still invokes browser input capture: ${modulePath}`);
+  }
   const imports = [
     ...source.matchAll(/^\s*(?:import|export)\s+(?:[^;]*?\s+from\s+)?['"]([^'"]+)['"]\s*;?/gm),
     ...source.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)

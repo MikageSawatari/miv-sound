@@ -13,7 +13,7 @@ const assets = path.resolve(process.argv[assetsIndex + 1]);
 const assetText = relative => readFile(path.join(assets, relative), 'utf8');
 const assetModule = relative => import(pathToFileURL(path.join(assets, relative)).href);
 
-test('VST lifecycle recovery never acquires a browser microphone on focus or interaction', async () => {
+test('VST lifecycle recovery never acquires a browser microphone on focus or interaction', async t => {
   const upstream = await readFile(new URL('../../external/effetune/js/app.js', import.meta.url), 'utf8');
   const staged = await assetText('js/app.js');
   const previous = { window: globalThis.window, document: globalThis.document,
@@ -49,8 +49,11 @@ test('VST lifecycle recovery never acquires a browser microphone on focus or int
       clearInterval(manager.telemetryTimer);
       assert.equal(await manager.initAudio(), '');
       const policy = manager.powerPolicyController;
-      assert.equal(policy.enabled, false, 'staged browser power control is disabled for host audio');
-      if (legacy) policy.enabled = true; // Reproduce the pre-adaptation capability-rich WebView.
+      assert.equal(policy.enabled, true, 'retain the default controller and its visibility/display-DSP policy');
+      if (legacy) {
+        const { AudioIOManager } = await import('../../external/effetune/js/audio/audio-io-manager.js');
+        manager.ioManager._getUserMediaWithTimeout = AudioIOManager.prototype._getUserMediaWithTimeout;
+      }
       // Keep the real route classification, ensureActive, input acquisition and
       // getUserMedia. Stop before a browser DSP recovery transaction can run.
       policy.beginUserGestureResume = kind => {
@@ -61,6 +64,8 @@ test('VST lifecycle recovery never acquires a browser microphone on focus or int
       };
       const method = (legacy ? upstream : staged).match(/    setupEventListeners\(\) \{[\s\S]*?\n    \}/)?.[0];
       assert.ok(method);
+      assert.equal(staged.match(/    setupEventListeners\(\) \{[\s\S]*?\n    \}/)?.[0],
+        upstream.replaceAll('\r\n', '\n').match(/    setupEventListeners\(\) \{[\s\S]*?\n    \}/)?.[0]);
       const context = { window, document, navigator, console };
       vm.runInNewContext(`this.App = class { ${method} };`, context);
       const app = new context.App();
@@ -82,10 +87,133 @@ test('VST lifecycle recovery never acquires a browser microphone on focus or int
         document.fire('visibilitychange');
         window.fire('pagehide');
         assert.equal(flushed, 2, 'saved pipeline flushing remains on hide/pagehide');
+        const io = manager.ioManager;
+        const originalBoundary = io._getUserMediaWithTimeout;
+        let boundaryCalls = 0;
+        io._getUserMediaWithTimeout = (...args) => { boundaryCalls++; return originalBoundary.call(io, ...args); };
+        await assert.rejects(io._getUserMediaWithTimeout({ audio: true }), { name: 'NotSupportedError' });
+        await assert.rejects(io.beginReacquireAudioInput({ requireVisible: false }), { name: 'NotSupportedError' });
+        await assert.rejects(io.reacquireAudioInput({ requireVisible: false }), { name: 'NotSupportedError' });
+        manager.audioContext.createBuffer = () => ({});
+        t.mock.method(console, 'warn', () => {}); // Expected unsupported-input diagnostics only.
+        await io.initAudioInput({ inputDeviceId: 'default' });
+        assert.equal(io.lastInputInitializationError.name, 'NotSupportedError');
+        assert.ok(boundaryCalls >= 4, 'initial input and both reacquisition APIs reach the same refused boundary');
+        assert.equal(captures, 0, 'no browser input path invokes the real mediaDevices API');
       }
       policy.dispose();
     }
   } finally {
+    globalThis.window = previous.window;
+    globalThis.document = previous.document;
+    if (previous.navigator) Object.defineProperty(globalThis, 'navigator', previous.navigator);
+    else delete globalThis.navigator;
+  }
+});
+
+test('hidden-at-construction VST restores plugin drawing on visibility and preserves display-DSP gating', async () => {
+  const previous = { window: globalThis.window, document: globalThis.document,
+    navigator: Object.getOwnPropertyDescriptor(globalThis, 'navigator') };
+  const target = () => ({
+    listeners: new Map(),
+    addEventListener(type, fn) { this.listeners.set(type, [...(this.listeners.get(type) || []), fn]); },
+    removeEventListener() {},
+    fire(type, event = {}) { for (const fn of this.listeners.get(type) || []) fn(event); }
+  });
+  let manager;
+  try {
+    let captures = 0, pending = Promise.resolve();
+    const document = Object.assign(target(), { hidden: true, body: new Element('body'), querySelector: () => null });
+    document.body.classList.add('view-visualizer');
+    const navigator = { mediaDevices: { addEventListener() {}, getUserMedia() {
+      captures++; return Promise.reject(new Error('Unexpected browser capture'));
+    } } };
+    const window = Object.assign(target(), { document, navigator, location: { search: '' },
+      sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
+      audioPreferences: {}, electronAPI: { onIPC() {} },
+      __effetuneHostCall: async () => ({ engineSampleRate: 48000, channels: 2 }) });
+    Object.assign(globalThis, { window, document });
+    Object.defineProperty(globalThis, 'navigator', { value: navigator, configurable: true });
+    const { AudioManager } = await assetModule('vst-audio-manager.js');
+    manager = new AudioManager();
+    clearInterval(manager.telemetryTimer);
+    assert.equal(await manager.initAudio(), '');
+    const draws = [[], []];
+    [manager.pipelineA, manager.pipelineB] = draws.map(history => [{
+      setPowerUiEnabled(enabled) { history.push(enabled); }
+    }]);
+    const policy = manager.powerPolicyController;
+    assert.equal(policy.enabled, true);
+    assert.equal(policy.pageHidden, true);
+    // Native DSP does not provide Web Audio worklet render proofs. Isolate
+    // that transport, while keeping real lifecycle handling, suppression,
+    // visibility decisions and plugin setPowerUiEnabled calls under test.
+    policy._requestWorkletObservation = () => {};
+    policy.requestReconcile = async () => policy._setUiPowerGate(policy.effectiveState, policy.processingDirective);
+    policy.beginUserGestureResume = kind => {
+      const operation = { phase: 'collecting', requestedKinds: new Set(), resourceVersion: 0 };
+      policy._extendGestureResumeOperation(operation, kind);
+      pending = operation.inputPromise?.catch(() => {}) || Promise.resolve();
+      return pending;
+    };
+    const appSource = await assetText('js/app.js'), uiSource = await assetText('js/ui-manager.js');
+    const method = (text, name) => {
+      const found = text.match(new RegExp(`    ${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n    \\}`))?.[0];
+      assert.ok(found, name); return found;
+    };
+    const context = { window, document, navigator, console };
+    vm.runInNewContext(`this.App = class { ${method(appSource, 'setupEventListeners')} };
+      this.UI = class { ${method(uiSource, 'isEffectPipelineHidden')} ${method(uiSource, 'updateEffectPipelineVisibility')} };`, context);
+    const ui = Object.assign(new context.UI(), { audioManager: manager, isDoubleBlindActive: () => false,
+      reportVisualizerFeedAllowed() {}, flushPipelineStateToLocalStorage() {} });
+    const app = Object.assign(new context.App(), { audioManager: manager, uiManager: ui });
+    app.setupEventListeners();
+    ui.updateEffectPipelineVisibility();
+    const expectDraw = allowed => {
+      assert.equal(policy.dspUiActivityAllowed, allowed);
+      for (const history of draws) assert.equal(history.at(-1), allowed);
+    };
+    expectDraw(false);
+    document.hidden = false;
+    document.fire('visibilitychange');
+    await pending;
+    assert.equal(policy.pageHidden, false);
+    document.body.classList.remove('view-visualizer');
+    ui.updateEffectPipelineVisibility();
+    expectDraw(true);
+    for (const [surface, type, event] of [[window, 'pageshow', {}], [window, 'focus', {}],
+      [document, 'visibilitychange', {}], [document, 'pointerdown', { pointerType: 'mouse' }],
+      [document, 'keydown', { key: 'A' }]]) {
+      surface.fire(type, event);
+      await pending;
+      expectDraw(true);
+      assert.equal(captures, 0, type);
+    }
+    // Genuine visibility and view changes must still suppress/re-enable both
+    // pipelines, independently of browser input acquisition failures.
+    document.hidden = true;
+    document.fire('visibilitychange');
+    expectDraw(false);
+    document.hidden = false;
+    window.fire('pageshow');
+    await pending;
+    expectDraw(true);
+    document.body.classList.add('view-visualizer');
+    ui.updateEffectPipelineVisibility();
+    expectDraw(false);
+    document.body.classList.remove('view-visualizer');
+    ui.updateEffectPipelineVisibility();
+    expectDraw(true);
+    policy.setDspUiSuppressed('mini-player', true);
+    expectDraw(false);
+    policy.setDspUiSuppressed('mini-player', false);
+    expectDraw(true);
+    assert.equal(captures, 0);
+  } finally {
+    if (manager) {
+      clearInterval(manager.telemetryTimer);
+      manager.powerPolicyController.dispose();
+    }
     globalThis.window = previous.window;
     globalThis.document = previous.document;
     if (previous.navigator) Object.defineProperty(globalThis, 'navigator', previous.navigator);
