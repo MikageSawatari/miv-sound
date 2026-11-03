@@ -11,6 +11,7 @@
 #include "engine/output_transition.h"
 #include "engine/pipeline_model.h"
 #include "engine/resampler.h"
+#include "plugin/version.h"
 
 #include <choc/text/choc_JSON.h>
 
@@ -393,12 +394,17 @@ void testLatency() {
 
 void testStateCodec() {
   PluginStateDocument fresh;
+  expect(fresh.appVersion == EFFETUNE_PLUGIN_VERSION_STR,
+         "fresh state uses the reported plugin display version");
   const auto freshJson = StateCodec::encode(fresh);
+  expect(choc::json::parse(freshJson)["appVersion"].getString() == EFFETUNE_PLUGIN_VERSION_STR,
+         "serialized fresh state retains the plugin display version");
   expect(choc::json::parse(freshJson)["pipelineB"].isVoid(),
          "fresh state keeps pipeline B uninitialized as null");
   PluginStateDocument freshDecoded;
   std::string error;
   expect(StateCodec::decode(freshJson, freshDecoded, &error) &&
+             freshDecoded.appVersion == fresh.appVersion &&
              !freshDecoded.pipelineBInitialized,
          "fresh pipeline B null round trip");
 

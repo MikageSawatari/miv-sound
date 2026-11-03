@@ -1623,7 +1623,7 @@ async function bootstrap(hostMessage) {
   return context;
 }
 
-test('Help, upstream credit, effect docs and AI clicks send production URLs through the native bridge', async () => {
+test('Help, mIV Sound repository, effect docs and AI clicks send URLs through the native bridge', async () => {
   const calls = [];
   const context = await bootstrap(async serialized => {
     calls.push(JSON.parse(serialized));
@@ -1694,7 +1694,7 @@ test('Help, upstream credit, effect docs and AI clicks send production URLs thro
     const query = 'How does it work?\n\nThis is about the Volume effect in mIV Sound audio processor.';
     assert.deepEqual(calls.filter(call => call.type === 'host/openExternal'), [
       'https://mikage.to/mimageviewer/manual/effetune.html',
-      'https://github.com/Frieve-A/effetune-mixwright',
+      'https://github.com/MikageSawatari/miv-sound',
       'https://effetune.frieve.com/docs/i18n/ja/plugins/basics.html#volume',
       'https://effetune.frieve.com/docs/i18n/ja/plugins/analyzer.html#level-meter',
       `https://chatgpt.com/?q=${encodeURIComponent(query)}`

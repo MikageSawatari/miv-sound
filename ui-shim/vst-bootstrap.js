@@ -314,7 +314,7 @@
   });
   const productionUrl = new URL('https://effetune.frieve.com/');
   const helpUrl = new URL('https://mikage.to/mimageviewer/manual/effetune.html');
-  const githubUrl = new URL('https://github.com/Frieve-A/effetune-mixwright');
+  const githubUrl = new URL('https://github.com/MikageSawatari/miv-sound');
   const normalizeExternalUrl = value => {
     const source = String(value || '');
     try {

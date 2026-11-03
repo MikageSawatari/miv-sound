@@ -429,7 +429,7 @@ struct SmokeState {
       state.externalAppHelpCalls.fetch_add(1, std::memory_order_relaxed);
     }
     if (request.find(
-            "\"url\":\"https://github.com/Frieve-A/effetune-mixwright\"") !=
+            "\"url\":\"https://github.com/MikageSawatari/miv-sound\"") !=
         std::string_view::npos) {
       state.externalGitHubCalls.fetch_add(1, std::memory_order_relaxed);
     }

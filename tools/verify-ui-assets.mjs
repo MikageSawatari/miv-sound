@@ -394,7 +394,7 @@ if (!bootstrap.includes("helpButton.id = 'helpSettingsButton';") ||
     !bootstrap.includes('settingsMenu.appendChild(helpButton);')) {
   throw new Error('The VST settings menu Help action is missing or bypasses the native host');
 }
-if (!bootstrap.includes("const githubUrl = new URL('https://github.com/Frieve-A/effetune-mixwright');") ||
+if (!bootstrap.includes("const githubUrl = new URL('https://github.com/MikageSawatari/miv-sound');") ||
     !bootstrap.includes("githubButton.id = 'githubSettingsButton';") ||
     !bootstrap.includes("githubButton.textContent = 'Based on EffeTune Mixwright by Frieve';") ||
     !bootstrap.includes('void openExternalUrl(githubUrl).catch') ||
