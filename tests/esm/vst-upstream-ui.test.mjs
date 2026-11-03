@@ -256,6 +256,60 @@ test('shared history snapshots and restoration retain native logical plugin IDs'
   }
 });
 
+test('default pipeline keeps Volume at unity and Level Meter, while saved gains remain intact', async () => {
+  const source = await assetText('js/app.js');
+  const method = source.match(/    async initializeAndBuildPipeline\(\) \{[\s\S]*?\n    \}/)?.[0];
+  assert.ok(method);
+  const { applySerializedState } = await assetModule('js/utils/serialization-utils.js');
+  const volume = (gain, id = 7) => ({ id, name: 'Volume', enabled: false,
+    parameters: { vl: gain }, inputBus: 0, outputBus: 1, channel: 'L' });
+  const cases = [
+    { saved: null, expectedA: ['Volume', 'Level Meter'], gains: [0], current: 'A', defaults: [0] },
+    { saved: [volume(-6), { name: 'Level Meter', enabled: true, parameters: {} }],
+      expectedA: ['Volume', 'Level Meter'], gains: [-6], current: 'A', defaults: [] },
+    { saved: { pipelineA: [volume(-6)], pipelineB: [volume(-12, 9)], currentPipeline: 'B' },
+      expectedA: ['Volume'], gains: [-6, -12], current: 'B', defaults: [] },
+    { saved: { pipelineA: [], pipelineB: null, currentPipeline: 'A' },
+      expectedA: [], gains: [], current: 'A', defaults: [] }
+  ];
+  for (const { saved, expectedA, gains, current, defaults } of cases) {
+    const savedBefore = structuredClone(saved), defaultWrites = [], rebuilds = [];
+    const window = { electronIntegration: { isElectron: true },
+      electronAPI: { getCommandLinePresetFile: async () => null },
+      ORIGINAL_PIPELINE_STATE_LOADED: saved !== null };
+    const App = vm.runInNewContext(`(class { ${method} })`, {
+      window, console, applySerializedState,
+      consumeTransientPipelineRestoreRequest: () => false,
+      getCachedStartupConfig: () => ({}),
+      isSuccessfulAudioGraphBuild: result => typeof result !== 'string' || result.length === 0
+    });
+    const pluginManager = { nextPluginId: 1, createPlugin(name) {
+      return { id: this.nextPluginId++, name, vl: 0, enabled: true,
+        setVl(value) { defaultWrites.push(value); this.vl = value; },
+        setEnabled(value) { this.enabled = value; },
+        setParameters(params) { if (params.vl !== undefined) this.vl = params.vl; },
+        updateParameters() {} };
+    } };
+    const audioManager = { setCurrentPipeline(value) { this.currentPipeline = value; },
+      async rebuildPipeline(force) { rebuilds.push(force); return ''; } };
+    const app = Object.assign(new App(), { startupConfig: {}, pluginManager, audioManager,
+      async loadPipelineState() { return saved; }, async restoreDoubleBlindTestFromUrl() {},
+      uiManager: { expandedPlugins: new Set(), parsePipelineState: () => null,
+        updatePipelineUI() {}, updateURL() {}, updatePipelineToggleButton() {} } });
+    assert.equal(await app.initializeAndBuildPipeline(), true);
+    assert.deepEqual(Array.from(audioManager.pipelineA, p => p.name), expectedA);
+    const volumes = [...audioManager.pipelineA, ...(audioManager.pipelineB || [])].filter(p => p.name === 'Volume');
+    assert.deepEqual(volumes.map(p => p.vl), gains);
+    assert.deepEqual(defaultWrites, defaults, 'default gain setter is used only without saved state');
+    assert.equal(audioManager.currentPipeline, current);
+    assert.deepEqual(rebuilds, [true]);
+    assert.deepEqual(saved, savedBefore, 'restoring a pipeline never rewrites the stored state');
+    if (saved && volumes.length) {
+      assert.ok(volumes.every(p => p.enabled === false && p.inputBus === 0 && p.outputBus === 1 && p.channel === 'L'));
+    }
+  }
+});
+
 test('bundled controller module graph exposes VST app choices and steps presets', async () => {
   const { APP_TARGETS, getAppTarget } = await assetModule('js/midi/app-targets.js');
   const { MidiMappingDialog } = await assetModule('js/midi/midi-mapping-dialog.js');
@@ -1027,9 +1081,17 @@ test('bundled settings persist supported choices and restore rejected edits', as
 });
 
 test('Last view is translated and its saved radio choice reopens without rewriting config', async () => {
-  for (const [locale, label] of [['en', 'Last view'], ['ja', '前回の表示']]) {
-    const text = await assetText(`js/locales/${locale}.json5`);
-    assert.equal(vm.runInNewContext(`(${text})`)['dialog.config.startupView.last'], label);
+  const { UIManager } = await assetModule('js/ui-manager.js');
+  const englishTranslations = vm.runInNewContext(`(${await assetText('js/locales/en.json5')})`);
+  const localeFiles = (await readdir(path.join(assets, 'js/locales'))).filter(file => file.endsWith('.json5'));
+  for (const file of localeFiles) {
+    const text = await assetText(`js/locales/${file}`);
+    const translations = vm.runInNewContext(`(${text})`);
+    const t = key => UIManager.prototype.t.call({ translations, englishTranslations }, key);
+    assert.equal(t('dialog.config.startupView.effects'), 'Effect Pipeline', `${file}: Effects is not the default`);
+    assert.equal(text.split('"dialog.config.startupView.effects":').length - 1, 1, 'locale key is replaced without duplicates');
+    assert.equal(t('dialog.config.startupView.last'),
+      file === 'ja.json5' ? '前回の表示 (デフォルト)' : 'Last view (Default)', `${file}: Last view is the default`);
   }
   const { showConfigDialog } = await assetModule('js/electron/configIntegration.js');
   const previous = { window: globalThis.window, document: globalThis.document };

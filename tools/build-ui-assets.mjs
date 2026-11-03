@@ -27,7 +27,8 @@ const vstTourLocales = {
 };
 const vstLocaleAdditions = {
   en: {
-    'dialog.config.startupView.last': 'Last view',
+    'dialog.config.startupView.effects': 'Effect Pipeline',
+    'dialog.config.startupView.last': 'Last view (Default)',
     'roomEq.action.import': 'Import\u2026',
     'roomEq.delete.title': 'Delete imported measurement',
     'roomEq.delete.confirm':
@@ -35,7 +36,8 @@ const vstLocaleAdditions = {
     'roomEq.delete.error': 'The imported measurement could not be deleted.'
   },
   ja: {
-    'dialog.config.startupView.last': '前回の表示',
+    'dialog.config.startupView.effects': 'Effect Pipeline',
+    'dialog.config.startupView.last': '前回の表示 (デフォルト)',
     'roomEq.action.import': '測定をインポート\u2026',
     'roomEq.delete.title': 'インポートした測定を削除',
     'roomEq.delete.confirm':
@@ -212,6 +214,15 @@ await cp(path.join(projectRoot, 'ui-shim', 'vendor', 'jszip-3.10.2.min.js'),
 
 const appPath = path.join(output, 'js', 'app.js');
 let app = await readText(appPath);
+// Use unity gain only when the UI creates the default pipeline. Restored
+// pipelines and presets keep their saved Volume parameters.
+app = replaceOnce(app, `            const defaultPlugins = [
+                { name: 'Volume', config: { volume: -6 } },
+                { name: 'Level Meter' }
+            ];`, `            const defaultPlugins = [
+                { name: 'Volume', config: { volume: 0 } },
+                { name: 'Level Meter' }
+            ];`);
 const originalImport = `import { AudioManager } from './audio-manager.js';`;
 if (!app.includes(originalImport)) {
   throw new Error('Unable to locate the AudioManager import in js/app.js');
@@ -999,14 +1010,26 @@ for (const localeFile of await readdir(localesPath)) {
     const expression = new RegExp(`(${field.replaceAll('.', '\\.')}\\s*)"(?:[^"\\\\]|\\\\.)*"`);
     localized = replaceOnce(localized, expression, (_match, prefix) => prefix + JSON.stringify(value));
   }
-  const additions = vstLocaleAdditions[path.basename(localeFile, '.json5')];
-  if (additions) {
+  const additions = {
+    // All pinned locales use the same Effects name with a localized default
+    // suffix. Remove that suffix everywhere; new labels fall back to English.
+    'dialog.config.startupView.effects': vstLocaleAdditions.en['dialog.config.startupView.effects'],
+    ...vstLocaleAdditions[path.basename(localeFile, '.json5')]
+  };
+  const fields = [];
+  for (const [key, value] of Object.entries(additions)) {
+    const field = `${JSON.stringify(key)}:`;
+    if (localized.includes(field)) {
+      const expression = new RegExp(`(${field.replaceAll('.', '\\.')}\\s*)"(?:[^"\\\\]|\\\\.)*"`);
+      localized = replaceOnce(localized, expression, (_match, prefix) => prefix + JSON.stringify(value));
+    } else {
+      fields.push(`  ${JSON.stringify(key)}: ${JSON.stringify(value)}`);
+    }
+  }
+  if (fields.length) {
     const closing = localized.match(/\s*}\s*$/);
     if (!closing) throw new Error(`Unable to extend VST locale: ${localeFile}`);
-    const fields = Object.entries(additions)
-      .map(([key, value]) => `  ${JSON.stringify(key)}: ${JSON.stringify(value)}`)
-      .join(',\n');
-    localized = `${localized.slice(0, closing.index).trimEnd()},\n${fields}\n}\n`;
+    localized = `${localized.slice(0, closing.index).trimEnd()},\n${fields.join(',\n')}\n}\n`;
   }
   await writeFile(localePath, localized, 'utf8');
 }

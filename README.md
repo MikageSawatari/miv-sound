@@ -45,7 +45,7 @@ The caption and its backplate disappear when lyrics are unavailable.
 After initialization checks succeed and before creating a WebView, mIV Sound
 checks for both `plugin/config.json` and
 the `webview/` profile under `MIV_SOUND_DATA_DIR`. Only when both are absent does
-it save **Last view** as the startup preference. Last view reopens the last
+it save **Last view (Default)** as the startup preference. Last view reopens the last
 Effects or Visualizer view across restarts; without a valid saved view it opens
 Visualizer. Each view change saves the view once through the shared configuration
 writer. Saving failures are logged; the next launch uses the last successfully
@@ -57,6 +57,9 @@ Without a saved layout, Visualizer loads the first
 view; it remains available from **Settings → Take the tour**.
 Rejected initialization writes no first-run config. Editor creation and attachment
 are refused until initialization succeeds.
+When no pipeline state is saved, the UI creates Volume at **0 dB** followed by
+Level Meter. Volume remains available for later adjustment. Existing pipelines
+and presets keep their saved gain, including values from earlier versions.
 The VST UI reports browser input as not configured, using upstream's explicit
 no-input preference; audio comes from the host. Input recovery is unnecessary,
 so no missing-input or resume action appears. The shared capture boundary still

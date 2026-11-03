@@ -13,6 +13,8 @@
 初回（config.json と webview/ が両方ない場合）だけ `{"startupView":"last"}` を作る。
 既存ファイルは書き換えず、`startupView` 未指定も従来どおり Effects となる。
 既存利用者は設定画面の「起動時の表示」で「前回の表示」を選ぶと利用できる。
+既定の印は日英で「前回の表示 (デフォルト)」/「Last view (Default)」に付け、
+全言語の Effects から外す。他言語の追加文言は従来どおり英語へフォールバックする。
 shim の load でも保存済みの `startupView` を読み替えずに渡すようにした。
 Library はこの VST UI に存在しないため前回表示の記録対象に含めず、既存の
 `startupView: "library"` は値を保持したまま従来と同じ Effects を開く。
@@ -34,6 +36,11 @@ Library はこの VST UI に存在しないため前回表示の記録対象に�
 明示値の保持、保存待ち中の連続切り替え、失敗時のログと書き込み回数、日英文言・設定 UI を追加。
 `config_store_startup_tests.cpp` の初回既定・既存ファイルの非更新を更新・拡充し、
 `processor_startup_tests.cpp` の初回既定の期待値も揃えた。
+
+同日追加: 保存状態がない場合に UI が生成する既定パイプラインは Volume **0 dB** と
+Level Meter に変更した。上流の -6 dB 指定を UI の生成時だけ置き換え、保存済みの
+単一／A・B パイプラインやプリセットの Volume 値は変更しない。保存済みの空パイプラインも
+そのまま復元する。JSON の構造や版番号、既存 fixture の -6 dB 値は変更しない。
 
 ## 2026-10-27 の比較記録
 
