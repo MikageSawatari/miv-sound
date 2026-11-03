@@ -2,7 +2,7 @@
 
 mIV Sound is a modified version of [EffeTune Mixwright](https://github.com/Frieve-A/effetune-mixwright)
 by Frieve, based on upstream **v0.15.0** (`8c9a0a5`), for audio adjustment in
-[mImageViewer](https://mikage.to/mimageviewer/). Display version: **0.15.0-miv.2**;
+[mImageViewer](https://mikage.to/mimageviewer/). Display version: **0.15.0-miv.3**;
 numeric build version: **0.15.0.1**. Please direct inquiries about this version
 to mImageViewer.
 
@@ -12,8 +12,13 @@ Settings, presets, SFZ references and WebView2 data live under the absolute
 empty or relative value fails initialization. On Windows, a non-empty
 `WEBVIEW2_USER_DATA_FOLDER` also fails initialization because it overrides
 WebView2's explicit storage path. Preset extensions and the state
-format remain compatible. Counter is hidden from the add menu and system presets;
-imported counters receive no position until a media clock is implemented.
+format remain compatible. Counter is available in the add menu and Counter Gallery
+in the system presets. Counters display mImageViewer's media playback position
+using the same clock as host lyrics, including on tracks without lyrics. They hold
+while paused and follow seeks, speed changes, track changes and loops. Without an
+available host position (including stopped playback and Remote), they display zero.
+Clicking a Counter does not reset it or seek. Playlist index remains zero because
+the host does not supply it. ProcessContext sample counts are not used for Counters.
 Copyright notices and upstream MIT licenses are preserved.
 
 On Windows, initialize the submodules, install VS 2026 BuildTools, CMake 4.3 and

@@ -432,13 +432,17 @@ const visualizerView = await readFile(path.join(assets, 'js', 'visualizer', 'vis
 const visualizerEditor = await readFile(path.join(assets, 'js', 'visualizer', 'visualizer-editor.js'), 'utf8');
 if (visualizerView.includes('ui/audio-player/') || visualizerView.includes('this.video.') ||
     visualizerView.includes('this.uiManager.audioManager.getHostTransport()') ||
-    !visualizerView.includes('counters() {\n        return new Map();\n    }') ||
-    !visualizerEditor.includes("byLabel(ITEM_TYPES.filter(type => type !== 'video' && type !== 'counter').map(type =>")) {
-  throw new Error('Visualizer still exposes Counter/Video or supplies misleading project transport');
+    !visualizerView.includes('this.uiManager.audioManager.getHostPlayback(now)') ||
+    !visualizerView.includes('time: 0, playing: false, speed: 1, source: null, stamp: now / 1000') ||
+    !visualizerView.includes('trackIndex: 0, external: false') ||
+    !visualizerEditor.includes("byLabel(ITEM_TYPES.filter(type => type !== 'video').map(type =>")) {
+  throw new Error('Visualizer must expose host Counter, omit Video and avoid project transport');
 }
 if (!visualizerView.includes('return this.uiManager.audioManager.getHostLyrics();') ||
+    !audioAdapter.includes('getHostPlayback(now = performance.now())') ||
+    !audioAdapter.includes('const playback = this.getHostPlayback();') ||
     !audioAdapter.includes('selectLyrics({')) {
-  throw new Error('The host lyrics provider is missing');
+  throw new Error('The shared host playback clock or lyrics provider is missing');
 }
 if (!visualizerView.includes('lyricsSeekTime() {\n        return null;\n    }') ||
     visualizerView.includes('this.renderer.lyricsSeekTime(')) {
@@ -456,9 +460,8 @@ for (const aspect of ['16:9', '21:9', '4:3', '1:1', '9:16']) {
     throw new Error(`mIV Original must be first and match its source aspect: ${file}`);
   }
   delete bundled['mIV Original'];
-  delete expected['Counter Gallery'];
   if (JSON.stringify(bundled) !== JSON.stringify(expected)) {
-    throw new Error(`Visualizer system presets must retain host Lyrics and omit Counter Gallery: ${file}`);
+    throw new Error(`Visualizer system presets must retain host Lyrics and Counter Gallery: ${file}`);
   }
 }
 if (pipelineManager.includes("from './pipeline/file-processor.js'") ||

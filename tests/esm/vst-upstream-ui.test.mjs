@@ -350,7 +350,7 @@ test('bundled Visualizer module graph retains viewport menu clamping', async () 
   } finally { globalThis.window = previousWindow; }
 });
 
-test('Visualizer add-item choices include host Lyrics and omit Video and Counter while retaining their saved types', async () => {
+test('Visualizer add-item choices include host Lyrics and Counter and omit Video while retaining its saved type', async () => {
   const { VisualizerEditor } = await assetModule('js/visualizer/visualizer-editor.js');
   const { ITEM_TYPES, createDefaultLayout } = await assetModule('js/visualizer/visualizer-model.js');
   const previousDocument = globalThis.document;
@@ -379,8 +379,8 @@ test('Visualizer add-item choices include host Lyrics and omit Video and Counter
     assert.ok(ITEM_TYPES.includes('video'), 'Video remains a supported saved item type');
     assert.ok(ITEM_TYPES.includes('counter'));
     assert.ok(choices.includes('lyrics'));
-    assert.ok(!choices.includes('counter'));
-    assert.deepEqual(choices.toSorted(), ITEM_TYPES.filter(type => !['video', 'counter'].includes(type)).toSorted());
+    assert.ok(choices.includes('counter'));
+    assert.deepEqual(choices.toSorted(), ITEM_TYPES.filter(type => type !== 'video').toSorted());
   } finally { globalThis.document = previousDocument; }
 });
 
@@ -399,7 +399,7 @@ test('bundled Visualizer presets put mIV Original first and retain the supported
     .filter(file => file.endsWith('.json')).sort(), files);
   for (const file of files) {
     const expected = JSON.parse(await readFile(new URL(file, sourceDirectory), 'utf8'));
-    delete expected['Counter Gallery'];
+    if (file === '16x9.json') assert.ok(expected['Counter Gallery'].items.some(item => item.type === 'counter'));
     if (expected['Lyric Stage']) {
       assert.ok(expected['Lyric Stage'].items.some(item => item.type === 'lyrics'));
       assert.ok(!expected['Lyric Stage'].items.some(item => item.type === 'counter'));
@@ -521,7 +521,7 @@ test('host lyrics never offer seeking even when the renderer reports a timed lyr
   assert.equal(seeks, 0, 'click cannot seek even if a player happens to be present');
 });
 
-test('imported Counter layouts receive no misleading project position', async () => {
+test('Counter layouts use the shared host media clock and show zero without a position', async () => {
   const { VisualizerView } = await assetModule('js/visualizer/visualizer-view.js');
   const { normalizeLayout, snapshotLayout, encodeLayoutShare, decodeLayoutShare } =
     await assetModule('js/visualizer/visualizer-model.js');
@@ -530,13 +530,65 @@ test('imported Counter layouts receive no misleading project position', async ()
   const layout = normalizeLayout(original);
   assert.ok(layout.items.some(item => item.type === 'counter'));
   assert.deepEqual(decodeLayoutShare(encodeLayoutShare(layout)), snapshotLayout(layout));
-  const view = { layout, uiManager: { audioManager: { getHostTransport() {
-    throw new Error('Counter must not read the host project position');
-  } } } };
+  let playback = null, reads = 0;
+  const view = Object.assign(Object.create(VisualizerView.prototype), {
+    layout, uiManager: { audioManager: {
+      getHostTransport() { throw new Error('Counter must not read the host project position'); },
+      getHostLyrics() { throw new Error('Counter must work without lyrics'); },
+      getHostPlayback(now) { reads++; return playback && { ...playback, stamp: now / 1000 }; }
+    } }
+  });
+  const ids = layout.items.filter(item => item.type === 'counter').map(item => item.id);
   for (const stamp of [0, 1000, 100000]) {
-    assert.deepEqual(VisualizerView.prototype.counters.call(view, stamp), new Map());
+    const counters = view.counters(stamp);
+    assert.deepEqual([...counters.keys()], ids);
+    for (const value of counters.values()) assert.deepEqual(value, {
+      time: 0, playing: false, speed: 1, source: null, stamp: stamp / 1000,
+      trackIndex: 0, external: false
+    });
   }
-  assert.equal(VisualizerView.prototype.videoFrame.call(view), null);
+  for (const state of [
+    { time: 35.5, playing: true, speed: 0.5, source: '9007199254740992' },
+    { time: 35.5, playing: false, speed: 0.5, source: '9007199254740992' },
+    { time: 8, playing: true, speed: 2, source: '9007199254740992' },
+    { time: 0.25, playing: true, speed: 1, source: '9007199254740993' }
+  ]) {
+    playback = state;
+    const before = reads;
+    for (const value of view.counters(1234).values()) assert.deepEqual(value, {
+      ...state, stamp: 1.234, trackIndex: 0, external: false
+    });
+    assert.equal(reads, before + 1, 'all Counter items share one clock read');
+  }
+  assert.equal(view.videoFrame(), null);
+});
+
+test('host Counter clicks cannot reset or seek the media position, including while unavailable', async () => {
+  const { VisualizerView } = await assetModule('js/visualizer/visualizer-view.js');
+  const source = await assetText('js/visualizer/visualizer-view.js');
+  const clickBinding = source.match(/        this\.stage\.addEventListener\('click', event => \{ if \(!this\.resetCounterAt\(event\)\) this\.seekToLyrics\(event\); \}\);/)?.[0];
+  assert.ok(clickBinding);
+  let playback = { time: 25, playing: true, speed: 1, source: '1', stamp: 0 }, click;
+  const view = Object.assign(Object.create(VisualizerView.prototype), {
+    layout: { items: [{ type: 'counter', id: 'counter' }] }, editor: { open: false },
+    canvas: { getBoundingClientRect: () => ({ left: 0, top: 0, width: 100, height: 100 }) },
+    renderer: { counterAt: () => 'counter' },
+    stage: { addEventListener(_name, handler) { click = handler; } },
+    uiManager: { audioManager: { getHostPlayback: () => playback },
+      audioPlayer: { contextManager: { seek() { assert.fail('Counter must not seek'); } } } }
+  });
+  vm.runInNewContext(`(function () { ${clickBinding} }).call(view);`, { view });
+  const event = { clientX: 50, clientY: 50, target: { closest: () => null } };
+  for (const available of [true, false]) {
+    if (!available) playback = null;
+    const before = view.counters(0);
+    view.beginCounterPointer(event);
+    assert.equal(view.counterAt(event), null);
+    assert.equal(view.resetCounter('counter', 0), false);
+    click(event);
+    assert.deepEqual(view.counters(0), before);
+    assert.equal(view.counterOrigins, undefined, 'no independent reset clock is created');
+  }
 });
 
 test('excluded desktop entries leave ordinary A/B availability and imported Video data intact', async () => {

@@ -104,7 +104,7 @@ if (JSON.stringify((await readdir(path.join(output, 'images'))).sort()) !==
     JSON.stringify([...brandingImages, 'bus_function.png'].sort())) {
   throw new Error('The pinned upstream image set has changed; review its branding');
 }
-// Omit unavailable system presets without touching saved or imported layouts.
+// Check the pinned host-supported system presets before adding mIV Original.
 const visualizerPresetsDirectory = path.join(output, 'presets', 'visualizer');
 let lyricStageCount = 0;
 let counterGalleryCount = 0;
@@ -112,7 +112,6 @@ for (const entry of await readdir(visualizerPresetsDirectory)) {
   if (!entry.endsWith('.json')) continue;
   const presetPath = path.join(visualizerPresetsDirectory, entry);
   const presets = JSON.parse(await readText(presetPath));
-  let changed = false;
   if (Object.hasOwn(presets, 'Lyric Stage')) {
     ++lyricStageCount;
     if (!presets['Lyric Stage'].items.some(item => item.type === 'lyrics') ||
@@ -122,10 +121,7 @@ for (const entry of await readdir(visualizerPresetsDirectory)) {
   }
   if (Object.hasOwn(presets, 'Counter Gallery')) {
     ++counterGalleryCount;
-    changed = true;
-    delete presets['Counter Gallery'];
   }
-  if (changed) await writeFile(presetPath, JSON.stringify(presets, null, 2) + '\n', 'utf8');
 }
 if (lyricStageCount !== 2 || counterGalleryCount !== 1) {
   throw new Error('The pinned Visualizer system preset set has changed');
@@ -465,12 +461,17 @@ visualizerView = replaceOnce(visualizerView, lyricsSeekProvider, `    // Host ly
         return null;
     }
 `);
-// mIV's project sample count is not the audible media position. Imported
-// counters retain their type and editor, but receive no position until a media clock is available.
+// mIV's project sample count is not the media position. Share the Lyrics clock;
+// external=false also keeps upstream's click-to-reset path disabled.
 const counterProvider = /    counters\(now = performance\.now\(\)\) \{[\s\S]*?\n    \}\n(?=    resetCounter)/;
 const videoProvider = /    videoFrame\(\) \{[\s\S]*?\n    \}\n(?=    async openPresets)/;
-visualizerView = replaceOnce(visualizerView, counterProvider, `    counters() {
-        return new Map();
+visualizerView = replaceOnce(visualizerView, counterProvider, `    counters(now = performance.now()) {
+        const items = this.layout.items.filter(item => item.type === 'counter');
+        if (!items.length) return new Map();
+        const playback = this.uiManager.audioManager.getHostPlayback(now) || {
+            time: 0, playing: false, speed: 1, source: null, stamp: now / 1000
+        };
+        return new Map(items.map(item => [item.id, { ...playback, trackIndex: 0, external: false }]));
     }
 `);
 visualizerView = replaceOnce(visualizerView, videoProvider, '    videoFrame() { return null; }\n');
@@ -518,7 +519,7 @@ if (visualizerEditor.split(visualizerAddChoices).length - 1 !== 1) {
   throw new Error('Unable to locate Visualizer add-item choices');
 }
 visualizerEditor = visualizerEditor.replace(visualizerAddChoices,
-  "byLabel(ITEM_TYPES.filter(type => type !== 'video' && type !== 'counter').map(type =>");
+  "byLabel(ITEM_TYPES.filter(type => type !== 'video').map(type =>");
 const visualizerChannels = `            const channels = [['', '1–2'], ['L', 'L'], ['R', 'R'], ...Array.from({ length: 7 }, (_, i) => [\`\${i * 2 + 3}\${i * 2 + 4}\`, \`\${i * 2 + 3}–\${i * 2 + 4}\`]), ...Array.from({ length: 16 }, (_, i) => [\`\${i + 1}\`, \`\${i + 1}\`])];
             this.field(properties, this.t('visualizer.channel', 'Channel'), 'select', item.channel || '', value => { item.channel = value || null; this.changed(); }, { values: channels });`;
 if (visualizerEditor.split(visualizerChannels).length - 1 !== 1) {

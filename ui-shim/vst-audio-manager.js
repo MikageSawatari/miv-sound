@@ -1062,15 +1062,25 @@ export class AudioManager extends BrowserAudioManager {
     this.hostPlaybackStale = false;
   }
 
-  getHostLyrics() {
+  // One host media clock for Lyrics and Counter, independent of lyric availability.
+  getHostPlayback(now = performance.now()) {
     const playback = this.hostPlayback;
     const metadata = this.nowPlayingMetadata;
-    if (this.hostPlaybackStale || !this.hostLyricsData || playback?.available !== 1 ||
+    if (this.hostPlaybackStale || playback?.available !== 1 ||
         metadata?.mediaGeneration == null || metadata.mediaGeneration !== playback.mediaGeneration) return null;
-    const elapsed = playback.playing === 1 ? (performance.now() - playback.receivedAt) / 1000 : 0;
-    return { data: this.hostLyricsData,
+    const elapsed = playback.playing === 1 ? (now - playback.receivedAt) / 1000 : 0;
+    return {
       time: Math.max(0, playback.positionSeconds + elapsed * playback.rate),
-      duration: metadata.durationSeconds ?? 0, isStopped: false };
+      playing: playback.playing === 1, speed: playback.rate,
+      source: playback.mediaGeneration, stamp: now / 1000
+    };
+  }
+
+  getHostLyrics() {
+    const playback = this.getHostPlayback();
+    if (!this.hostLyricsData || !playback) return null;
+    return { data: this.hostLyricsData, time: playback.time,
+      duration: this.nowPlayingMetadata.durationSeconds ?? 0, isStopped: false };
   }
 
   pollNativeTelemetry() {

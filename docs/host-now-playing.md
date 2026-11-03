@@ -179,7 +179,8 @@ internal UI snapshots, preserving all u64 bits across JavaScript number limits;
 it is absent before any generation has been supplied. This internal encoding does
 not change the host-facing VST type. Lyrics travel only when the Now Playing
 revision changes. JS interpolates from response receipt with `performance.now()`.
-Lyrics require equal media generations, available=1, and a fresh position for the
+Lyrics and Counter share `AudioManager.getHostPlayback(now)`, which requires
+equal media generations, available=1, and a fresh position for the
 current display generation. On becoming visible, the UI marks its position stale
 before drawing; a request issued before that visibility change cannot clear it.
 If a hidden poll was processed, the first resumed poll discards queued telemetry
@@ -190,8 +191,110 @@ hidden poll reads a fresh position directly; visibility changes do not change
 The Visualizer Lyrics item and the built-in Lyric Stage presets use this host
 provider, including the upstream Offset and fade settings. The pinned v0.15.0
 Lyric Stage presets (16:9 and 9:16) contain no Counter items and are retained
-unchanged. Counter and Counter Gallery remain excluded, and imported Counters
-still receive no position. Host playback is independent of `hostTransport` and
+unchanged. Counter is available in the add menu and Counter Gallery is retained.
+The Counter provider maps the shared clock's seconds, playing flag, rate and media
+generation to each item's `time`, `playing`, `speed` and `source`; `stamp` is the
+same read's `performance.now()` in seconds. The renderer consumes seconds directly,
+so no sample-rate conversion is needed. All counters use `external=false`, disabling
+click-to-reset, and `trackIndex=0` because the host supplies no playlist ordinal.
+Without a valid position, counters receive time zero and playing=false. Lyrics
+alone additionally require parsed lyric data; a track without lyrics still has a
+Counter clock. No independent clock, origin, cache or interpolation is added.
+Host playback is independent of `hostTransport` and
 does not change ProcessContext handling. The built-in player and its `.lrc` file
 attachment workflow remain excluded; lyrics come from the host. Remote delivery
 is controlled by the host and needs no special receiver behavior.
+
+## Counter restoration investigation (2026-11-03)
+
+The existing host notifications are sufficient for Counter; no mIV host change is
+required. This is a source inspection of the read-only
+`G:\home\mimageviewer-badge-1663` worktree (observed HEAD `ea813e726`, including
+its current working files), not a new hardware synchronization measurement.
+The position means the same media playback/display clock already used by Lyrics.
+
+Host evidence:
+
+- `src/app.rs`: `now_playing_input_for_player` always captures the player's
+  `now_playing_position_source`, for both audio and video. Metadata is published
+  after an adopted playback start, not merely opening a file. No lyrics check
+  gates the clock. `publish_mounted_local_now_playing`,
+  `reconcile_local_now_playing` and `finish_local_now_playing_eof` handle lifetime
+  and final EOF; pending continuous navigation can retain the current owner.
+- `src/video/mod.rs`: `now_playing_position_source` captures that player's
+  `AvClock` and diagnostics. `src/video/clock.rs`: `now_secs` returns a pending
+  seek target immediately, holds its anchor on pause, otherwise uses the master
+  clock; the sender also reads `is_playing` and `playback_speed`.
+- `src/effetune/now_playing/position.rs`: the host-control worker polls Local at
+  200 ms intervals while the Sound bridge is active. It sends the first sample,
+  playing/rate changes, deviations greater than 20 ms from its last prediction,
+  and an update after at least one second. Even paused Local remains polled.
+  On generation change it sends available=0 first, then a Local sample on the
+  next poll. Remote/Empty have no subsequent clock polling. RegisterBridge resets
+  the sender, replaying its generation and position without requiring lyrics.
+- `src/effetune/now_playing.rs`: Remote forcibly uses `PositionSource::Unavailable`.
+  Changing owner/path and clearing advance `media_generation`; artwork/lyrics
+  completion keeps it. `src/effetune/mod.rs` drives the sender on the host-control
+  worker independently of the Sound editor's visibility.
+
+| Playback case | Existing host behavior / Counter consequence |
+| --- | --- |
+| Audio with no lyrics | Local clock is still sent; Counter works, Lyrics remains absent. |
+| Video and video audio mode | Same adopted player's clock; no format/mode/lyrics gate. |
+| Pause/resume | Playing change is sent on a poll; paused position holds, resume advances at rate. |
+| Seek, including paused seek | Seek target becomes clock position; prediction deviation triggers a send. A change within 20 ms can wait for the normal one-second update. |
+| Speed change (including 0.5/2) | Rate change triggers a send; both existing interpolation layers use that rate. |
+| Track change, including A/B/A | Generation first invalidates the old position, then the new Local clock arrives. JS requires the metadata and position generations to agree exactly. |
+| Stop, close, final EOF | Owner is cleared; a new unavailable generation gives Counter zero. |
+| Same-track loop / continuous navigation | Owner can remain through loop resolution; the position jump is sent as a seek. A next track adopts a new generation; a final EOF clears. |
+| Restart after final EOF | Current host source has regression coverage for W, seek bars, left seek and Space republishing the same track (`now_playing_eof_user_seek_handlers_and_space_republish_same_track`). |
+| Remote viewing | Host publishes unavailable; Counter zero. It never borrows the last Local clock. |
+| No notification / older host | Receiver starts unavailable; Counter zero, with no fallback to ProcessContext or wall-clock elapsed time. |
+
+The receiver already stores one latest native `PlaybackPosition`, extrapolates it
+from QPC time in `appendPlaybackSnapshot`, and returns it in `host/getInfo` and
+`telemetry/read`. JS stores one `hostPlayback` stamped at response receipt.
+`getHostPlayback(now)` extracts the former `getHostLyrics` time calculation and
+generation/visibility validation unchanged, without its parsed-lyrics requirement.
+Both providers use it; Counter maps its seconds directly into the renderer Map.
+The existing lyric visibility generation and stale flag are shared, not duplicated.
+This adopts the state-reduction approach from the host's `CLAUDE.md`: no second
+origin, timer, interpolation policy, sample conversion, or click-reset state.
+
+The sender cadence and any existing output-device/display timing difference are
+inherited from Lyrics. This change does not add latency correction or claim a new
+measurement of the physical sound output. The host's fork-plan sections 8/9 and
+lyrics-trial section 13 discuss that separate output-delay question.
+
+For hardware acceptance, use Counter Gallery and a saved/imported Counter with
+lyric-free audio, lyric-bearing audio and video/audio mode. Compare Counter with
+mIV's playback display while pausing/resuming, seeking both ways (also paused),
+switching 0.5/1/2 speed, changing tracks A/B/A, looping and reaching final EOF.
+Check restart after EOF, closing playback, Remote acquisition/release and hiding/
+showing Sound. Check that Counter and lyric clicks leave transport unchanged,
+and that Counter and Counter Gallery are available alongside existing saved
+layouts and mIV Original. No mIV or WebView2 process was launched for this work.
+
+Verification for this change (all listed runs passed):
+
+| Check | Result |
+| --- | --- |
+| `tools/build-ui-assets.mjs --out build/miv-counter-check/assets`, then `tools/verify-ui-assets.mjs --assets build/miv-counter-check/assets` | Generation and contract passed. |
+| `tests/esm/vst-audio-manager.test.mjs` | 101/101, including four new shared-clock tests. |
+| `tests/esm/vst-upstream-ui.test.mjs --assets build/miv-counter-check/assets` | 46/46, including host Counter descriptors, unavailable zero, click behavior, menu and Gallery restoration. |
+| `tests/esm/miv-original-visualizer.test.mjs` | 11/11. |
+| `tests/esm/json-storage-compatibility.test.mjs`, with generated assets and synthetic fixtures | 5/5. |
+| `tests/esm/choc-webview-header.test.mjs` | 1/1. |
+| Upstream `visualizer-counter`, `visualizer-counter-display`, `visualizer-counter-fonts`, `visualizer-counter-gallery`, `visualizer-model`, `visualizer-lyrics-source` (each `.test.mjs`) | 6 + 7 + 3 + 2 + 29 + 2 = 49/49. JS total 213/213, no skips. |
+| Standalone MSVC C++20: `config_store_startup_tests`, `json_storage_compatibility_tests`, `automation_scheduler_tests`, `resampler_tests` | All four executables passed; current sources compiled directly, using disposable storage under `build/miv-counter-check`. |
+| `git diff --check` | Passed. |
+
+JS logs are `build/miv-counter-{audio,ui,original,json,choc}.log` and
+`build/miv-counter-upstream-*.log`. Native commands and results are retained in
+`build/miv-counter-native.{cmd,py,log}`; objects and executables are under
+`build/miv-counter-check/native`. The standalone runner's initial setup needed
+include-path fixes. An attempted automation-binding test link also required DSP
+Engine symbols, so it is not counted among the four standalone passes.
+CMake configure/build/ctest and the full linked processor/NowPlaying tests were
+not run in the sandbox; the design lead owns the candidate build and those gates.
+No commits or host worktree changes were made.

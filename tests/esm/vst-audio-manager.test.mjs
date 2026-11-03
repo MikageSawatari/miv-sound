@@ -4055,6 +4055,80 @@ function createHostLyricsManager() {
   return { context, manager, metadata, playback, publish, visibility, setNow: value => { now = value; } };
 }
 
+test('shared host clock works without lyrics and supplies media seconds, speed and source', () => {
+  const { manager, metadata, playback, setNow } = createHostLyricsManager();
+  assert.equal(manager.getHostPlayback(), null);
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 1, nowPlaying: metadata('1', '') });
+  manager.applyNativePlayback({ playback: playback('1', 12, 1, 0.5) }, 0);
+  setNow(800);
+  const position = manager.getHostPlayback();
+  assert.equal(position.time, 12.4);
+  assert.equal(position.playing, true);
+  assert.equal(position.speed, 0.5);
+  assert.equal(position.source, '1');
+  assert.equal(position.stamp, 0.8);
+  assert.equal(manager.getHostLyrics(), null, 'missing lyrics do not disable the shared clock');
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 2, nowPlaying: metadata() });
+  assert.equal(manager.getHostLyrics().time, manager.getHostPlayback().time);
+});
+
+test('shared host clock holds on pause and follows seeks, speed changes and loops', () => {
+  const { manager, publish, playback, setNow } = createHostLyricsManager();
+  publish();
+  setNow(750);
+  assert.equal(manager.getHostPlayback().time, 2.5);
+  manager.applyNativePlayback({ playback: playback('1', 20, 0, 0.5) }, 0);
+  setNow(9000);
+  assert.equal(manager.getHostPlayback().time, 20);
+  assert.equal(manager.getHostPlayback().playing, false);
+  manager.applyNativePlayback({ playback: playback('1', 5, 0, 0.5) }, 0);
+  setNow(10000);
+  assert.equal(manager.getHostPlayback().time, 5, 'a paused seek replaces the held position');
+  manager.applyNativePlayback({ playback: playback('1', 5, 1, 2) }, 0);
+  setNow(10500);
+  assert.equal(manager.getHostPlayback().time, 6);
+  manager.applyNativePlayback({ playback: playback('1', 0, 1, 2) }, 0);
+  setNow(11000);
+  assert.equal(manager.getHostPlayback().time, 1, 'loop uses the new position without another clock');
+  assert.equal(manager.getHostPlayback().source, '1');
+  assert.equal(manager.getHostLyrics().time, manager.getHostPlayback().time);
+});
+
+test('shared host clock rejects old tracks in either delivery order and clears on stop or Remote', () => {
+  const { manager, metadata, playback } = createHostLyricsManager();
+  const a = '9007199254740992', b = '9007199254740993';
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 1, nowPlaying: metadata(a) });
+  manager.applyNativePlayback({ playback: playback(a) }, 0);
+  assert.equal(manager.getHostPlayback().source, a);
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 2, nowPlaying: metadata(b, '') });
+  assert.equal(manager.getHostPlayback(), null);
+  manager.applyNativePlayback({ playback: playback(b, 30, 0) }, 0);
+  assert.equal(manager.getHostPlayback().time, 30);
+  manager.applyNativePlayback({ playback: playback(a, 0, 0) }, 0);
+  assert.equal(manager.getHostPlayback(), null);
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 3, nowPlaying: metadata(a) });
+  assert.equal(manager.getHostPlayback().time, 0);
+  manager.applyNativePlayback({ playback: { mediaGeneration: a, available: 0 } }, 0);
+  assert.equal(manager.getHostPlayback(), null, 'stop, EOF and Remote invalidate the clock');
+  manager.applyNativePlayback({ playback: playback(a) }, 0);
+  manager.applyNativeNowPlaying({ nowPlayingRevision: 4, nowPlaying: null });
+  assert.equal(manager.getHostPlayback(), null);
+});
+
+test('shared host clock waits for a fresh response after visibility changes', () => {
+  const { manager, publish, playback, visibility } = createHostLyricsManager();
+  publish();
+  const oldGeneration = manager.lyricsDisplayGeneration;
+  visibility(true);
+  visibility(false);
+  assert.equal(manager.getHostPlayback(), null);
+  manager.applyNativePlayback({ playback: playback() }, oldGeneration);
+  assert.equal(manager.getHostPlayback(), null);
+  manager.applyNativePlayback({ playback: playback('1', 7, 0) }, manager.lyricsDisplayGeneration);
+  assert.equal(manager.getHostPlayback().time, 7);
+  assert.equal(manager.getHostLyrics().time, 7);
+});
+
 test('host lyrics parse and select each candidate once per Now Playing revision', () => {
   const { context, manager, metadata, playback, setNow } = createHostLyricsManager();
   let parses = 0, selections = 0;
