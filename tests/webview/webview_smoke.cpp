@@ -1379,12 +1379,18 @@ int runTestBody(const int argc, char **argv) {
             ignored) && ignored == "true";
 
         libraryEntriesDisabled = evaluate(
-            "(() => { const before = !document.body.classList.contains('view-library'); "
+            // The fixture keeps its saved Library preference, but the VST must
+            // display Effects and leave the unsupported keyboard entry unused.
+            "(() => { const effectsVisible = () => "
+            "!document.body.classList.contains('view-library') && "
+            "!document.body.classList.contains('view-visualizer') && "
+            "document.getElementById('effectPipelineButton')?.getAttribute('aria-pressed') === 'true'; "
+            "const before = effectsVisible(); "
             "const event = new KeyboardEvent('keydown', { key: 'l', ctrlKey: true, "
             "bubbles: true, cancelable: true }); document.dispatchEvent(event); "
             "return before && !event.defaultPrevented && "
-            "!document.body.classList.contains('view-library') && "
-            "window.appConfig?.startupView === 'effects'; })()",
+            "effectsVisible() && !window.uiManager?.libraryDeferredStartupOptions && "
+            "window.appConfig?.startupView === 'library'; })()",
             ignored) && ignored == "true";
 
         headerControlsAreVstSpecific = evaluate(
@@ -1853,11 +1859,14 @@ int runTestBody(const int argc, char **argv) {
               }
               document.getElementById('config-category-startup').click();
               if (!visible(document.getElementById('startup-view-effects')) ||
+                  !visible(document.getElementById('startup-view-last')) ||
                   !visible(document.getElementById('startup-view-visualizer')) ||
                   document.getElementById('startup-view-browser') ||
                   visible(document.getElementById('startup-view-library')) ||
                   visible(document.getElementById('pl-last')) || visible(document.getElementById('auto-launch')))
                 throw new Error('Startup visibility');
+              document.getElementById('startup-view-last').dispatchEvent(new Event('change', { bubbles: true }));
+              await waitFor(() => window.appConfig.startupView === 'last');
               document.getElementById('startup-view-visualizer').dispatchEvent(new Event('change', { bubbles: true }));
               await waitFor(() => window.appConfig.startupView === 'visualizer');
               document.getElementById('startup-view-effects').dispatchEvent(new Event('change', { bubbles: true }));

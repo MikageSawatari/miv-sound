@@ -211,9 +211,9 @@ int main() {
     invalidThenRepaired(root);
     existingConfig(root, L"existing-config", "{\n  \"language\":\"ja\", \"columns\":3\n}\n", false);
     existingConfig(root, L"late-config", R"({"startupView":"effects","columns":3})", true);
-    existingConfig(root, L"visualizer-config", R"({"startupView":"visualizer"})", false);
-    existingConfig(root, L"library-config", R"({"startupView":"library"})", true);
-    existingConfig(root, L"last-view-config", R"({"startupView":"last","lastStartupView":"effects"})", false);
+    existingConfig(root, L"visualizer-config", R"({"startupView":"visualizer","columns":3})", false);
+    existingConfig(root, L"library-config", R"({"startupView":"library","columns":3})", true);
+    existingConfig(root, L"last-view-config", R"({"startupView":"last","lastStartupView":"effects","columns":3})", false);
     existingProfile(root, false);
     existingProfile(root, true);
     writeFailure(root);

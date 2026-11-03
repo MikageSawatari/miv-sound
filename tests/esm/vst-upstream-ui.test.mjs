@@ -605,7 +605,7 @@ test('Visualizer startup preference opens once without changing host pipeline st
     ['library', 'visualizer', 'effects'], [undefined, 'visualizer', 'effects'],
     ['last', 'effects', 'effects'], ['last', 'visualizer', 'visualizer'],
     ['last', undefined, 'visualizer'], ['last', 'library', 'visualizer'],
-    ['last', 'invalid', 'visualizer']
+    ['last', 'invalid', 'visualizer'], ['unknown', 'visualizer', 'effects']
   ]) {
     const app = new App();
     let opened = 0;
@@ -813,7 +813,8 @@ test('startup navigation waits for native readiness and settles before revealing
     for (const [startupView, dspReady, disabled, initiallyReady = false, lastStartupView] of [
       ['visualizer', true, false], ['effects', true, false],
       ['visualizer', false, false], ['visualizer', true, true], ['visualizer', true, false, true],
-      ['last', true, false], ['last', true, false, false, 'effects']
+      ['last', true, false], ['last', true, false, false, 'effects'],
+      ['library', true, false], ['unknown', true, false]
     ]) {
       const opensVisualizer = startupView === 'visualizer' || (startupView === 'last' && lastStartupView !== 'effects');
       const document = Object.assign(new Element('document'), {
@@ -864,6 +865,8 @@ test('startup navigation waits for native readiness and settles before revealing
       const uiManager = Object.assign(new context.Navigation(), {
         updateLoadingProgress() {}, initPluginList() {}, initDragAndDrop() {}, initAudio() {},
         updatePipelineUI() {}, isDoubleBlindActive: () => false, hideLibraryView() {},
+        showLibraryView() { assert.fail('VST startup must never open Library'); },
+        deferLibraryStartupView() { assert.fail('VST startup must never defer Library'); },
         updateViewSwitchButtons() {}, setError: message => assert.fail(message),
         async ensureVisualizerView() {
           openedStatuses.push(sources.getStatus());
@@ -905,6 +908,8 @@ test('startup navigation waits for native readiness and settles before revealing
       await app.applyStartupViewPreference();
       assert.equal(openedStatuses.length, opensVisualizer ? 1 : 0);
       assert.equal(document.body.classList.contains('view-visualizer'), opensVisualizer);
+      assert.equal(document.body.classList.contains('view-library'), false);
+      assert.equal(app.startupConfig.startupView, startupView, 'raw startup preference is preserved');
       assert.equal(document.documentElement.classList.contains('app-starting'), false);
       assert.equal(app.initialized, true);
       assert.equal(audioManager.pipelineA, pipelineA);
@@ -1541,6 +1546,35 @@ test('bundled ElectronIntegration constructs with the VST subscription surface',
   vm.runInNewContext(`${source}\nthis.integration = new ElectronIntegration();`, context);
   assert.equal(context.integration.isElectron, true);
   assert.equal(typeof context.window.electronAPI.onBackupRestore(() => {}), 'function');
+});
+
+test('raw startup preferences never enable the VST Library keyboard entry', async () => {
+  const { UIManager } = await assetModule('js/ui-manager.js');
+  const previous = { window: globalThis.window, document: globalThis.document };
+  try {
+    for (const startupView of ['last', 'effects', 'visualizer', 'library', 'unknown']) {
+      const context = await bootstrap(async () => ({ ok: true, config: { startupView } }));
+      Object.assign(globalThis, { window: context.window, document: context.document });
+      window.appConfig = (await window.electronAPI.loadConfig()).config;
+      let libraryRequests = 0;
+      const navigation = {
+        isDoubleBlindActive: () => false,
+        toggleLibraryView() { libraryRequests++; },
+        showLibraryView() { libraryRequests++; }
+      };
+      UIManager.prototype.initKeyboardShortcuts.call(navigation);
+      for (const key of ['l', 'L']) for (const modifier of ['ctrlKey', 'metaKey']) {
+        const event = { target: document.body, key, [modifier]: true,
+          defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
+        for (const listener of document.listeners.get('keydown') || []) await listener(event);
+        await Promise.resolve();
+        assert.equal(event.defaultPrevented, false, `${modifier}+${key} is not a VST command`);
+      }
+      assert.equal(libraryRequests, 0);
+      assert.equal(document.body.classList.contains('view-library'), false);
+      assert.equal(window.appConfig.startupView, startupView, 'saved preference remains intact');
+    }
+  } finally { Object.assign(globalThis, previous); }
 });
 
 test('Effects and Visualizer buttons navigate through shared upstream view transitions', async () => {
