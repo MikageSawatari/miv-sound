@@ -627,6 +627,75 @@ test('Visualizer startup preference opens once without changing host pipeline st
   assert.deepEqual(errors, [['Visualizer could not be opened. Please try the Visualizer button.', true]]);
 });
 
+test('failed Visualizer startup records Effects once and a later Visualizer action is saved', async () => {
+  const { loadConfig, saveConfig, publishElectronConfigSnapshot } = await assetModule('js/electron/config-store.js');
+  const appSource = await assetText('js/app.js'), uiSource = await assetText('js/ui-manager.js');
+  const method = (source, name) => {
+    const match = source.match(new RegExp(`    (?:async )?${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n    \\}`));
+    assert.ok(match, name); return match[0];
+  };
+  const previous = { window: globalThis.window, document: globalThis.document };
+  try {
+    for (const startupView of ['visualizer', 'last']) {
+      let stored = { startupView, lastStartupView: 'visualizer', future: 42 };
+      const writes = [], pending = [], diagnostics = [], errors = [];
+      const context = await bootstrap(async serialized => {
+        const { type, payload } = JSON.parse(serialized);
+        if (type === 'config/load') return { ok: true, config: { ...stored } };
+        if (type === 'config/save') {
+          stored = { ...payload.config };
+          writes.push(stored);
+        }
+        return { ok: true, success: true };
+      });
+      Object.assign(globalThis, { window: context.window, document: context.document });
+      const classes = vm.runInNewContext(`({ App: class {
+        ${['applyStartupViewPreference', 'openConfiguredStartupView'].map(n => method(appSource, n)).join('\n')}
+      }, UI: class {
+        ${['rememberStartupView', 'updateViewSwitchButtons', 'showVisualizerView'].map(n => method(uiSource, n)).join('\n')}
+      } })`, { window, document, console: { error: (...args) => diagnostics.push(args) }, saveConfig(...args) {
+        const result = saveConfig(...args); pending.push(result); return result;
+      } });
+      const config = await loadConfig(true);
+      publishElectronConfigSnapshot(config);
+      const failedOpen = Promise.withResolvers(), failure = new Error('Test Visualizer initialization failure');
+      let attempts = 0;
+      const ui = Object.assign(new classes.UI(), {
+        isDoubleBlindActive: () => false, hideLibraryView() {},
+        ensureVisualizerView() { return ++attempts === 1 ? failedOpen.promise : Promise.resolve(); },
+        visualizerView: { show() {}, updateVisibility() {} },
+        setError: (...args) => errors.push(args)
+      });
+      const app = Object.assign(new classes.App(), { startupConfig: config, uiManager: ui });
+      ui.updateViewSwitchButtons('effects');
+      const startup = app.applyStartupViewPreference();
+      assert.notEqual(ui.startupViewReady, true, 'tracking waits for startup navigation to settle');
+      assert.equal(pending.length, 0, 'temporary Effects is not saved while Visualizer is opening');
+      failedOpen.reject(failure);
+      await startup;
+      await Promise.all(pending);
+      assert.equal(ui.startupViewReady, true, 'failed navigation still enables view tracking');
+      assert.equal(document.body.classList.contains('view-visualizer'), false, 'Effects remains visible');
+      assert.equal(ui.rememberedStartupView, 'effects');
+      assert.deepEqual(writes.map(c => c.lastStartupView), ['effects'], 'remaining Effects is saved exactly once');
+      assert.deepEqual(diagnostics, [['Error opening Visualizer startup view:', failure]]);
+      assert.deepEqual(errors, [['Visualizer could not be opened. Please try the Visualizer button.', true]]);
+      await app.applyStartupViewPreference();
+      ui.updateViewSwitchButtons('effects');
+      await Promise.all(pending);
+      assert.equal(attempts, 1, 'startup preference is not retried automatically');
+      assert.equal(pending.length, 1, 'same Effects view does not trigger another save');
+      assert.equal(await ui.showVisualizerView(), true, 'a later user action can open Visualizer');
+      await Promise.all(pending);
+      assert.equal(document.body.classList.contains('view-visualizer'), true);
+      assert.deepEqual(writes.map(c => c.lastStartupView), ['effects', 'visualizer']);
+      assert.equal(pending.length, 2, 'successful retry saves Visualizer exactly once');
+      assert.equal(stored.startupView, startupView, 'startup preference remains unchanged');
+      assert.equal(stored.future, 42);
+    }
+  } finally { Object.assign(globalThis, previous); }
+});
+
 test('view transitions persist through the shared config queue and reopen after a restart', async () => {
   const { loadConfig, saveConfig, publishElectronConfigSnapshot } = await assetModule('js/electron/config-store.js');
   const uiSource = await assetText('js/ui-manager.js'), appSource = await assetText('js/app.js');
