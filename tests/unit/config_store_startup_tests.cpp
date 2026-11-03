@@ -22,15 +22,15 @@ struct Fixture {
     std::filesystem::remove_all(root, ignored);
   }
 };
-constexpr auto visualizer = R"({"startupView":"visualizer"})";
+constexpr auto lastView = R"({"startupView":"last"})";
 
 void firstRun() {
   Fixture f;
   expect(f.store.loadForStartup(f.content, &f.error), "first-run config loads");
-  expect(f.content == visualizer && f.error.empty(), "first run selects visualizer");
-  expect(f.store.load(f.content) && f.content == visualizer, "first run persists visualizer");
+  expect(f.content == lastView && f.error.empty(), "first run selects last view");
+  expect(f.store.load(f.content) && f.content == lastView, "first run persists last view without history");
   expect(!std::filesystem::exists(f.root / "webview"), "config loading creates no profile");
-  expect(f.store.loadForStartup(f.content) && f.content == visualizer, "later launch retains visualizer");
+  expect(f.store.loadForStartup(f.content) && f.content == lastView, "later launch retains last-view preference");
 }
 
 void existingConfig(const std::string &saved, bool profile) {
@@ -58,8 +58,8 @@ void writeFailure() {
   auto temporary = f.store.path();
   temporary += ".tmp";
   std::filesystem::create_directories(temporary);
-  expect(f.store.loadForStartup(f.content, &f.error) && f.content == visualizer,
-         "failed write retains visualizer for this session");
+  expect(f.store.loadForStartup(f.content, &f.error) && f.content == lastView,
+         "failed write retains last view without history for this session");
   expect(!f.error.empty(), "failed write supplies a diagnostic to the processor");
   expect(!std::filesystem::exists(f.store.path()), "failed write leaves no config file");
 }
@@ -71,9 +71,12 @@ int main() {
     existingConfig("{\n  \"language\": \"ja\"\n}\n", false);
     existingConfig(R"({"startupView":"effects"})", false);
     existingConfig(R"({"startupView":"effects"})", true);
+    existingConfig(R"({"startupView":"visualizer"})", true);
+    existingConfig(R"({"startupView":"library"})", false);
+    existingConfig(R"({"startupView":"last","lastStartupView":"effects"})", true);
     existingProfile();
     writeFailure();
-    std::cout << "6 startup config cases passed\n";
+    std::cout << "9 startup config cases passed\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << error.what() << '\n';

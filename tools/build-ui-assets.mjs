@@ -27,6 +27,7 @@ const vstTourLocales = {
 };
 const vstLocaleAdditions = {
   en: {
+    'dialog.config.startupView.last': 'Last view',
     'roomEq.action.import': 'Import\u2026',
     'roomEq.delete.title': 'Delete imported measurement',
     'roomEq.delete.confirm':
@@ -34,6 +35,7 @@ const vstLocaleAdditions = {
     'roomEq.delete.error': 'The imported measurement could not be deleted.'
   },
   ja: {
+    'dialog.config.startupView.last': '前回の表示',
     'roomEq.action.import': '測定をインポート\u2026',
     'roomEq.delete.title': 'インポートした測定を削除',
     'roomEq.delete.confirm':
@@ -242,12 +244,21 @@ app = app.replace(startupViewPreference, `    applyStartupViewPreference() {
     }
 
     async openConfiguredStartupView() {
-        if (this.startupConfig?.startupView === 'visualizer') {
+        const config = this.startupConfig || {};
+        const startupView = config.startupView === 'last'
+            ? (config.lastStartupView === 'effects' ? 'effects' : 'visualizer')
+            : config.startupView;
+        if (startupView === 'visualizer') {
             try { await this.uiManager?.showVisualizerView?.(); }
             catch (error) {
                 console.error('Error opening Visualizer startup view:', error);
                 this.uiManager?.setError?.('Visualizer could not be opened. Please try the Visualizer button.', true);
             }
+        }
+        if (this.uiManager) {
+            // Do not record the temporary Effects view before startup navigation.
+            this.uiManager.startupViewReady = true;
+            this.uiManager.rememberStartupView?.();
         }
     }
 
@@ -672,6 +683,7 @@ await writeFile(pipelineManagerPath, pipelineManager, 'utf8');
 
 const uiManagerPath = path.join(output, 'js', 'ui-manager.js');
 let uiManager = await readText(uiManagerPath);
+uiManager = "import { saveConfig } from './electron/config-store.js';\n" + uiManager;
 const browserImport = "import { BrowserView } from './browser/browser-view.js';\n";
 const browserProvider = /    showBrowserView\(\) \{[\s\S]*?\n    \}\n(?=\n    updateViewSwitchButtons)/;
 if (uiManager.split(browserImport).length !== 2 || !browserProvider.test(uiManager)) {
@@ -905,6 +917,20 @@ uiManager = uiManager.replace(localizationInitializer, `    refreshDynamicLocali
     }
 
 ${localizationInitializer}`);
+uiManager = replaceOnce(uiManager, /    updateViewSwitchButtons\(view = [^\n]+\) \{\n/,
+  `    rememberStartupView(view = document.body?.classList.contains('view-visualizer') ? 'visualizer' : 'effects') {
+        if (!this.startupViewReady || !['effects', 'visualizer'].includes(view)) return;
+        const previous = this.rememberedStartupView;
+        if (previous === view) return;
+        this.rememberedStartupView = view;
+        if (previous === undefined && window.appConfig?.lastStartupView === view) return;
+        // The shared writer serializes patches with settings-dialog saves and
+        // logs failures. Track transitions even if a previous write failed.
+        void saveConfig(true, { lastStartupView: view });
+    }
+
+$&        this.rememberStartupView?.(view);
+`);
 await writeFile(uiManagerPath, uiManager, 'utf8');
 await rm(path.join(output, 'js', 'ui', 'double-blind-test'), { recursive: true, force: true });
 // The A/B action availability policy is shared with ordinary pipeline actions.
@@ -1064,7 +1090,28 @@ if (!browserStartup.test(configIntegration) || !browserCategory.test(configInteg
   throw new Error('Unable to locate the excluded desktop Browser settings');
 }
 configIntegration = configIntegration.replace(browserStartup, '').replace(browserCategory, '')
-  .replace(startupChoices, "const startupViews = ['effects', 'visualizer'];");
+  // Retain a saved Library value in the hidden control. This VST has no Library
+  // view, so it still opens Effects without rewriting the user's preference.
+  .replace(startupChoices, "const startupViews = ['last', 'effects', 'library', 'visualizer'];");
+configIntegration = replaceOnce(configIntegration,
+  '            <label class="section-label" id="config-startup-view-label"></label>',
+  `            <label class="section-label" id="config-startup-view-label"></label>
+            <div class="radio-container">
+              <input type="radio" name="startup-view" id="startup-view-last" value="last" \${config.startupView === 'last' ? 'checked' : ''}>
+              <label for="startup-view-last" id="config-startup-view-last-label"></label>
+            </div>`);
+configIntegration = replaceOnce(configIntegration,
+  "    document.getElementById('config-startup-view-label').textContent = t('dialog.config.startupView');",
+  `    document.getElementById('config-startup-view-last-label').textContent = t('dialog.config.startupView.last');
+    document.getElementById('config-startup-view-label').textContent = t('dialog.config.startupView');`);
+configIntegration = replaceOnce(configIntegration,
+  "    const startupEffects = document.getElementById('startup-view-effects');",
+  `    const startupLast = document.getElementById('startup-view-last');
+    if (startupLast) startupLast.checked = startupView === 'last';
+    const startupEffects = document.getElementById('startup-view-effects');`);
+configIntegration = replaceOnce(configIntegration,
+  "    document.getElementById('startup-view-effects'),",
+  "    document.getElementById('startup-view-last'),\n    document.getElementById('startup-view-effects'),");
 await writeFile(configIntegrationPath, configIntegration, 'utf8');
 
 const clipboardPath = path.join(output, 'js', 'ui', 'pipeline', 'clipboard-manager.js');

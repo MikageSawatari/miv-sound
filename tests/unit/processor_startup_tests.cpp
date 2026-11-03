@@ -112,10 +112,10 @@ void firstRun(const fs::path &root, bool missingRuntime) {
   const auto result = processor->initialize(nullptr);
   failWebViewConstruction = false;
   expect(result == kResultOk, "new directory initializes even without a WebView runtime");
-  expect(choc::json::parse(read(f.configPath()))["startupView"].getString() == "visualizer",
+  expect(choc::json::parse(read(f.configPath()))["startupView"].getString() == "last",
          "successful initialize persists the first-run startup view");
-  expect(config(*processor)["startupView"].getString() == "visualizer", "config/load reflects first-run default");
-  expect(choc::json::parse(configAtWebViewConstruction)["config"]["startupView"].getString() == "visualizer",
+  expect(config(*processor)["startupView"].getString() == "last", "config/load reflects first-run default");
+  expect(choc::json::parse(configAtWebViewConstruction)["config"]["startupView"].getString() == "last",
          "config is published before any WebView can load it");
   expect(!fs::exists(f.data / "webview"), "processor tests never create a WebView2 profile");
   auto view = owned(processor->createView(ViewType::kEditor));
@@ -192,7 +192,7 @@ void writeFailure(const fs::path &root) {
   auto processor = owned(new EffeTuneProcessor);
   expect(processor->initialize(nullptr) == kResultOk, "failed first-run save does not reject initialize");
   expect(!fs::exists(f.configPath()), "failed save creates no config file");
-  expect(config(*processor)["startupView"].getString() == "visualizer", "failed save keeps session visualizer default");
+  expect(config(*processor)["startupView"].getString() == "last", "failed save keeps session last-view default without history");
   expect(processor->terminate() == kResultOk, "terminate failed-save component");
 }
 } // namespace
@@ -211,11 +211,14 @@ int main() {
     invalidThenRepaired(root);
     existingConfig(root, L"existing-config", "{\n  \"language\":\"ja\", \"columns\":3\n}\n", false);
     existingConfig(root, L"late-config", R"({"startupView":"effects","columns":3})", true);
+    existingConfig(root, L"visualizer-config", R"({"startupView":"visualizer"})", false);
+    existingConfig(root, L"library-config", R"({"startupView":"library"})", true);
+    existingConfig(root, L"last-view-config", R"({"startupView":"last","lastStartupView":"effects"})", false);
     existingProfile(root, false);
     existingProfile(root, true);
     writeFailure(root);
     expect(!cleanupFailed, "restore test environment");
-    std::cout << "12 processor startup cases passed (WebView2 is not linked)\n";
+    std::cout << "15 processor startup cases passed (WebView2 is not linked)\n";
     return 0;
   } catch (const std::exception &error) {
     std::cerr << "Processor startup failure: " << error.what() << '\n';

@@ -420,7 +420,6 @@
       document.documentElement.classList.toggle('effetune-vst-native-spectrum', window.__effetuneNativeSpectrum);
       const config = result.config || {};
       return { success: true, config: { ...config,
-        startupView: config.startupView === 'visualizer' ? 'visualizer' : 'effects',
         spectrumOverlayQuality: window.__effetuneNativeSpectrum && config.spectrumOverlayQuality === 'hq' ? 'hq' : 'normal' } };
     },
     saveConfig: async config => window.__effetuneHostCall('config/save', { config }),

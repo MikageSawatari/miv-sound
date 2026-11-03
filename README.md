@@ -45,9 +45,14 @@ The caption and its backplate disappear when lyrics are unavailable.
 After initialization checks succeed and before creating a WebView, mIV Sound
 checks for both `plugin/config.json` and
 the `webview/` profile under `MIV_SOUND_DATA_DIR`. Only when both are absent does
-it save Visualizer as the startup view. If saving fails, it logs the failure and
-uses Visualizer for that session. Existing config and saved layouts are never
-changed by this default. Without a saved layout, Visualizer loads the first
+it save **Last view** as the startup preference. Last view reopens the last
+Effects or Visualizer view across restarts; without a valid saved view it opens
+Visualizer. Each view change saves the view once through the shared configuration
+writer. Saving failures are logged; the next launch uses the last successfully
+saved view, or Visualizer if none exists. Existing startup preferences and saved
+layouts are never changed by this default. Existing users can select
+**Settings → Configuration → Startup → Last view** (「前回の表示」) to enable it.
+Without a saved layout, Visualizer loads the first
 16:9 system preset, mIV Original. The tour does not start automatically in this
 view; it remains available from **Settings → Take the tour**.
 Rejected initialization writes no first-run config. Editor creation and attachment
@@ -137,7 +142,7 @@ presets. Player transport controls are omitted from the mapping choices.
 **Configuration → General** includes the upstream language and theme choices.
 It also selects sine or bandpass noise for frequency audition and the SFZ bank
 size limit (64, 128, 256, 512, or 1024 MiB; 256 MiB by default).
-**Startup** selects the Effect Pipeline or Visualizer view when the editor opens;
+**Startup** selects Last view, Effect Pipeline or Visualizer when the editor opens;
 the pipeline itself continues to come from the host's plug-in state.
 **Display** selects instantaneous or Peak Hold spectra for per-effect Spectrum
 Overlays, automatic or manual pipeline columns, and Visualizer HDR rendering.

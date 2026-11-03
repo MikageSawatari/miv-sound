@@ -1,5 +1,42 @@
 # JSON 保存形式の比較と互換性検証（2026-10-27）
 
+## 前回の表示の追加（2026-11-03）
+
+`MIV_SOUND_DATA_DIR/plugin/config.json` に次の任意値を追加した。object の保存形式・
+64KiB の上限・bridge の保存先は変わらず、schema envelope や移行処理は追加しない。
+
+| キー | 値と扱い |
+| --- | --- |
+| `startupView` | 既存の `effects` / `library` / `visualizer` に `last`（前回の表示）を追加。`last` のときだけ `lastStartupView` を参照する。 |
+| `lastStartupView` | 最後に表示した `effects` / `visualizer`。未保存・不正値の場合、`startupView: "last"` は Visualizer で開く。Visualizer の保存済みレイアウトは従来どおり読み、レイアウトがなければ mIV Original になる。 |
+
+初回（config.json と webview/ が両方ない場合）だけ `{"startupView":"last"}` を作る。
+既存ファイルは書き換えず、`startupView` 未指定も従来どおり Effects となる。
+既存利用者は設定画面の「起動時の表示」で「前回の表示」を選ぶと利用できる。
+shim の load でも保存済みの `startupView` を読み替えずに渡すようにした。
+Library はこの VST UI に存在しないため前回表示の記録対象に含めず、既存の
+`startupView: "library"` は値を保持したまま従来と同じ Effects を開く。
+
+記録は起動時の表示が確定した後、および Effects / Visualizer が切り替わったときに行う。
+起動途中の仮の Effects は記録せず、同じ表示への再操作も保存しない。確定した起動表示が
+保存済みの前回表示と一致すれば起動時の書き込みも行わない。明示した起動表示を使う場合も
+`lastStartupView` だけを記録し、`startupView` や無関係のキーは変更しない。
+設定画面と共通の `config-store.js` の patch 保存キューを使うため、未完了の保存がある間の
+連続切り替えと他の設定変更も順に保存する。失敗は既存 writer がログへ出し、自動再試行しない。
+次回は最後に保存できた値（なければ Visualizer）で開く。プリセット・VST state の形式は不変。
+
+旧版の native ConfigStore は追加キーをそのまま保存できるが、旧 UI は `last` を知らない。
+特に追加前の mIV shim は `last` を Effects に読み替えるため、旧版で開いて設定を保存すると
+`startupView` が `effects` に変わる可能性がある。旧 UI へ持ち戻した際の「前回の表示」の復元は
+保証しない。既存の明示値・他の設定の互換性は維持する。
+
+検証は `tests/esm/vst-upstream-ui.test.mjs` に保存・再読込、初回の Visualizer fallback、
+明示値の保持、保存待ち中の連続切り替え、失敗時のログと書き込み回数、日英文言・設定 UI を追加。
+`config_store_startup_tests.cpp` の初回既定・既存ファイルの非更新を更新・拡充し、
+`processor_startup_tests.cpp` の初回既定の期待値も揃えた。
+
+## 2026-10-27 の比較記録
+
 設計書第8版 §5.5 の「JSON ファイル側の形の確認」に対応。作業の基準は miv ブランチ ba7f2aa。作業ツリーを切り替えず、git show / git diff / git ls-tree で各タグと、それぞれが固定する external/effetune の commit を読んだ。mIV 本体・submodule・製品コードは変更していない。コミットなし。
 
 ## 比較した正確な版

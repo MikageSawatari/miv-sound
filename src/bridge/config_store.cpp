@@ -61,7 +61,7 @@ bool ConfigStore::loadForStartup(std::string &content, std::string *error) const
         path_.parent_path().parent_path() / "webview", profileError);
     // Inaccessible storage is not evidence of a new user.
     if (!configExists && !profileExists && !configError && !profileError) {
-      content = R"({"startupView":"visualizer"})";
+      content = R"({"startupView":"last"})";
       (void)save(content, error);
       return true;
     }

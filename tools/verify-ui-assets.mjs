@@ -281,7 +281,10 @@ if (!history.includes('id: plugin.id') ||
     historyIdReservation > historyPluginCreation) {
   throw new Error('Undo/redo history IDs or single native synchronization contract is missing');
 }
-if (!app.includes("if (this.startupConfig?.startupView === 'visualizer')") ||
+if (!app.includes("if (startupView === 'visualizer')") ||
+    !app.includes("config.startupView === 'last'") ||
+    !app.includes("config.lastStartupView === 'effects'") ||
+    !uiManager.includes('void saveConfig(true, { lastStartupView: view });') ||
     !app.includes('await this.uiManager?.showVisualizerView?.();') ||
     app.includes('applyInitialStartupViewClass(config, windowRef)') ||
     app.includes('this.uiManager?.showLibraryView?.(') ||
@@ -373,6 +376,7 @@ if (!bootstrap.includes('.config-dialog .device-section { display: none !importa
 }
 const configIntegration = await readFile(path.join(assets, 'js', 'electron', 'configIntegration.js'), 'utf8');
 if (!configIntegration.includes("const categories = ['general', 'startup', 'display', 'controllers'];") ||
+    !configIntegration.includes('id="startup-view-last"') ||
     configIntegration.includes('id="startup-view-browser"') ||
     configIntegration.includes('id="browser-user-agent"') ||
     !configIntegration.includes('${Object.keys(categoryPanels).map(category => `') ||

@@ -577,11 +577,11 @@ test('automatic columns use available width while preserving the saved manual co
 });
 
 test('VST config loads supported startup views and normal PCM quality without losing preferences', async () => {
-  for (const startupView of ['effects', 'visualizer', 'library', 'browser', undefined]) {
+  for (const startupView of ['last', 'effects', 'visualizer', 'library', 'browser', undefined]) {
     const context = await bootstrap(async () => ({ ok: true,
       config: { startupView, theme: 'paper', spectrumOverlayQuality: 'hq', spectrumOverlayPeakHold: true, future: 42 } }));
     const { config } = await context.window.electronAPI.loadConfig();
-    assert.equal(config.startupView, startupView === 'visualizer' ? 'visualizer' : 'effects');
+    assert.equal(config.startupView, startupView, 'loading does not rewrite a saved preference');
     assert.equal(config.spectrumOverlayQuality, 'normal');
     assert.equal(config.spectrumOverlayPeakHold, true);
     assert.equal(config.theme, 'paper');
@@ -600,13 +600,21 @@ test('Visualizer startup preference opens once without changing host pipeline st
   const App = vm.runInNewContext(`(class { ${methods.join('\n')} })`, {
     console: { error: (...args) => diagnostics.push(args) }
   });
-  for (const startupView of ['effects', 'visualizer', 'library', undefined]) {
+  for (const [startupView, lastStartupView, expectedView] of [
+    ['effects', 'visualizer', 'effects'], ['visualizer', 'effects', 'visualizer'],
+    ['library', 'visualizer', 'effects'], [undefined, 'visualizer', 'effects'],
+    ['last', 'effects', 'effects'], ['last', 'visualizer', 'visualizer'],
+    ['last', undefined, 'visualizer'], ['last', 'library', 'visualizer'],
+    ['last', 'invalid', 'visualizer']
+  ]) {
     const app = new App();
     let opened = 0;
-    app.startupConfig = { startupView };
+    app.startupConfig = { startupView, lastStartupView };
     app.uiManager = { async showVisualizerView() { opened++; } };
     await Promise.all([app.applyStartupViewPreference(), app.applyStartupViewPreference()]);
-    assert.equal(opened, startupView === 'visualizer' ? 1 : 0);
+    assert.equal(opened, expectedView === 'visualizer' ? 1 : 0);
+    assert.deepEqual(app.startupConfig, { startupView, lastStartupView });
+    assert.equal(app.uiManager.startupViewReady, true);
   }
   const app = new App();
   const errors = [];
@@ -619,6 +627,110 @@ test('Visualizer startup preference opens once without changing host pipeline st
   assert.deepEqual(errors, [['Visualizer could not be opened. Please try the Visualizer button.', true]]);
 });
 
+test('view transitions persist through the shared config queue and reopen after a restart', async () => {
+  const { loadConfig, saveConfig, publishElectronConfigSnapshot } = await assetModule('js/electron/config-store.js');
+  const uiSource = await assetText('js/ui-manager.js'), appSource = await assetText('js/app.js');
+  const method = (source, name) => {
+    const match = source.match(new RegExp(`    (?:async )?${name}\\([^\\n]*\\) \\{[\\s\\S]*?\\n    \\}`));
+    assert.ok(match, name); return match[0];
+  };
+  const previous = { window: globalThis.window, document: globalThis.document };
+  try {
+    for (const startupView of ['last', 'effects', 'visualizer', 'library']) {
+      let stored = { startupView, language: 'ja', future: 42 }, writes = [], reject = false, gate;
+      const context = await bootstrap(async serialized => {
+        const { type, payload } = JSON.parse(serialized);
+        if (type === 'config/load') return { ok: true, config: { ...stored } };
+        if (type !== 'config/save') return { ok: true };
+        writes.push({ ...payload.config });
+        if (gate) await gate.promise;
+        if (reject) return { ok: false, error: 'Test storage failure' };
+        stored = { ...payload.config };
+        return { ok: true, success: true };
+      });
+      Object.assign(globalThis, { window: context.window, document: context.document });
+      const pending = [];
+      const classes = vm.runInNewContext(`({ App: class {
+        ${['applyStartupViewPreference', 'openConfiguredStartupView'].map(n => method(appSource, n)).join('\n')}
+      }, UI: class {
+        ${['rememberStartupView', 'updateViewSwitchButtons', 'showEffectPipelineView', 'showVisualizerView']
+          .map(n => method(uiSource, n)).join('\n')}
+      } })`, { window, document, console, saveConfig(...args) {
+        const result = saveConfig(...args); pending.push(result); return result;
+      } });
+      const reopen = async () => {
+        const config = await loadConfig(true);
+        publishElectronConfigSnapshot(config);
+        document.body.classList.remove('view-visualizer');
+        const ui = Object.assign(new classes.UI(), {
+          isDoubleBlindActive: () => false, showTransientMessage() {}, hideLibraryView() {}, async ensureVisualizerView() {},
+          visualizerView: { show() {}, hide() {}, updateVisibility() {} }
+        });
+        window.uiManager = ui;
+        // Upstream initializes navigation before opening the configured view.
+        const count = writes.length;
+        ui.updateViewSwitchButtons('effects');
+        assert.equal(writes.length, count, 'temporary startup Effects is never saved');
+        const app = Object.assign(new classes.App(), { startupConfig: config, uiManager: ui });
+        await app.applyStartupViewPreference();
+        await Promise.all(pending);
+        return ui;
+      };
+      let ui = await reopen();
+      assert.equal(document.body.classList.contains('view-visualizer'), ['last', 'visualizer'].includes(startupView));
+      assert.equal(stored.startupView, startupView);
+      assert.equal(stored.lastStartupView, ['last', 'visualizer'].includes(startupView) ? 'visualizer' : 'effects');
+      writes = [];
+      ui.rememberStartupView();
+      assert.equal(writes.length, 0, 'same view does not write');
+      ui.isDoubleBlindActive = () => true;
+      assert.equal(await ui.showVisualizerView(), false);
+      await Promise.all(pending);
+      assert.equal(writes.length, 0, 'rejected navigation never records a view');
+      ui.isDoubleBlindActive = () => false;
+      // Delay one native commit, return to the original view before it finishes,
+      // and save another setting concurrently. Each transition must survive.
+      gate = Promise.withResolvers();
+      ui.showEffectPipelineView();
+      await ui.showVisualizerView();
+      ui.showEffectPipelineView();
+      const settingsSaved = saveConfig(true, { theme: 'paper' });
+      gate.resolve();
+      await Promise.all([...pending, settingsSaved]);
+      gate = null;
+      const expectedTransitions = ['last', 'visualizer'].includes(startupView)
+        ? ['effects', 'visualizer', 'effects'] : ['visualizer', 'effects'];
+      assert.deepEqual(writes.slice(0, -1).map(c => c.lastStartupView), expectedTransitions);
+      assert.equal(stored.lastStartupView, 'effects');
+      assert.equal(stored.theme, 'paper');
+      assert.equal(stored.future, 42);
+      assert.equal(stored.language, 'ja');
+      assert.equal(stored.startupView, startupView, 'view changes never rewrite the startup preference');
+      writes = [];
+      ui = await reopen();
+      assert.equal(document.body.classList.contains('view-visualizer'), startupView === 'visualizer');
+      assert.equal(writes.length, startupView === 'visualizer' ? 1 : 0, 'matching saved view needs no startup write');
+      const errors = [], originalError = console.error;
+      reject = true;
+      try {
+        console.error = (...args) => errors.push(args);
+        const count = writes.length;
+        if (startupView === 'visualizer') ui.showEffectPipelineView();
+        else await ui.showVisualizerView();
+        await Promise.all(pending);
+        ui.rememberStartupView();
+        await Promise.all(pending);
+        assert.equal(writes.length, count + 1, 'failure causes no repeated writes');
+        assert.equal(errors.length, 1, 'storage failure is logged');
+      } finally { console.error = originalError; }
+      reject = false;
+      const savedView = stored.lastStartupView;
+      await reopen();
+      if (startupView === 'last') assert.equal(savedView, 'effects', 'failed change leaves the last durable view');
+    }
+  } finally { Object.assign(globalThis, previous); }
+});
+
 test('startup navigation waits for native readiness and settles before revealing the view', async () => {
   const appSource = await assetText('js/app.js');
   const uiSource = await assetText('js/ui-manager.js');
@@ -629,10 +741,12 @@ test('startup navigation waits for native readiness and settles before revealing
   };
   const previous = { window: globalThis.window, document: globalThis.document };
   try {
-    for (const [startupView, dspReady, disabled, initiallyReady = false] of [
+    for (const [startupView, dspReady, disabled, initiallyReady = false, lastStartupView] of [
       ['visualizer', true, false], ['effects', true, false],
-      ['visualizer', false, false], ['visualizer', true, true], ['visualizer', true, false, true]
+      ['visualizer', false, false], ['visualizer', true, true], ['visualizer', true, false, true],
+      ['last', true, false], ['last', true, false, false, 'effects']
     ]) {
+      const opensVisualizer = startupView === 'visualizer' || (startupView === 'last' && lastStartupView !== 'effects');
       const document = Object.assign(new Element('document'), {
         documentElement: new Element('html'), body: new Element('body'), hidden: false
       });
@@ -688,7 +802,7 @@ test('startup navigation waits for native readiness and settles before revealing
         },
         visualizerView: { show() { document.body.classList.add('view-visualizer'); }, updateVisibility() {} }
       });
-      const app = Object.assign(new context.App(), { startupConfig: { startupView }, audioManager, uiManager,
+      const app = Object.assign(new context.App(), { startupConfig: { startupView, lastStartupView }, audioManager, uiManager,
         pluginManager: { loadPlugins: () => pluginsLoaded.promise },
         initializeAudioWorklet: async () => true,
         initializeAndBuildPipeline: async () => { assert.equal(await audioManager.rebuildPipeline(), ''); return true; },
@@ -710,7 +824,7 @@ test('startup navigation waits for native readiness and settles before revealing
         assert.equal(document.documentElement.classList.contains('app-starting'), true);
       }
       rebuiltInfo.resolve({ dspReady, contextGeneration: 7 });
-      if (startupView === 'visualizer') {
+      if (opensVisualizer) {
         await until(() => openedStatuses.length === 1);
         assert.equal(startupContentHandled, true);
         assert.deepEqual(openedStatuses, [disabled ? 'disabled' : dspReady ? 'ready' : 'unavailable']);
@@ -720,8 +834,8 @@ test('startup navigation waits for native readiness and settles before revealing
       viewReady.resolve();
       await initialized;
       await app.applyStartupViewPreference();
-      assert.equal(openedStatuses.length, startupView === 'visualizer' ? 1 : 0);
-      assert.equal(document.body.classList.contains('view-visualizer'), startupView === 'visualizer');
+      assert.equal(openedStatuses.length, opensVisualizer ? 1 : 0);
+      assert.equal(document.body.classList.contains('view-visualizer'), opensVisualizer);
       assert.equal(document.documentElement.classList.contains('app-starting'), false);
       assert.equal(app.initialized, true);
       assert.equal(audioManager.pipelineA, pipelineA);
@@ -792,6 +906,9 @@ test('bundled settings persist supported choices and restore rejected edits', as
         if (!success) console.error = () => {};
         theme.value = 'paper';
         await theme.dispatchEvent('change');
+        await document.getElementById('startup-view-last').dispatchEvent('change');
+        assert.equal(saved.startupView, success ? 'last' : 'effects');
+        assert.equal(document.getElementById('startup-view-last').checked, success);
         await document.getElementById('startup-view-visualizer').dispatchEvent('change');
         const display = document.getElementById('spectrum-overlay-display');
         display.value = 'peakHold';
@@ -819,7 +936,7 @@ test('bundled settings persist supported choices and restore rejected edits', as
       assert.equal(hdrStorage.get('effetune_visualizer_hdr'), 'true');
       assert.deepEqual(hdrApplied, [true]);
       assert.equal(saved.future, 42);
-      assert.equal(calls.filter(call => call.type === 'config/save').length, 6);
+      assert.equal(calls.filter(call => call.type === 'config/save').length, 7);
       assert.deepEqual(applied, success ? [['theme', 'paper'], ['spectrum', { quality: 'normal', peakHold: true }]] : []);
       await document.getElementById('close-btn').dispatchEvent('click');
       await showConfigDialog(true, {});
@@ -830,6 +947,40 @@ test('bundled settings persist supported choices and restore rejected edits', as
       assert.equal(document.getElementById('sfz-size-limit').value, String(saved.sfzMaxSizeMiB));
       assert.equal(document.getElementById('pipeline-column-mode').value, saved.pipelineColumnMode);
       assert.equal(document.getElementById('visualizer-hdr').checked, true);
+      await document.getElementById('close-btn').dispatchEvent('click');
+    }
+  } finally { Object.assign(globalThis, previous); }
+});
+
+test('Last view is translated and its saved radio choice reopens without rewriting config', async () => {
+  for (const [locale, label] of [['en', 'Last view'], ['ja', '前回の表示']]) {
+    const text = await assetText(`js/locales/${locale}.json5`);
+    assert.equal(vm.runInNewContext(`(${text})`)['dialog.config.startupView.last'], label);
+  }
+  const { showConfigDialog } = await assetModule('js/electron/configIntegration.js');
+  const previous = { window: globalThis.window, document: globalThis.document };
+  try {
+    for (const startupView of ['last', 'effects', 'visualizer', 'library']) {
+      const saved = { startupView, lastStartupView: 'effects', future: 42 };
+      const writes = [];
+      const context = await bootstrap(async serialized => {
+        const { type, payload } = JSON.parse(serialized);
+        if (type === 'config/load') return { ok: true, config: saved };
+        if (type === 'config/save') writes.push(payload.config);
+        return { ok: true, success: true };
+      });
+      Object.assign(globalThis, { window: context.window, document: createFakeDocument() });
+      window.localStorage = { getItem() {}, setItem() {} };
+      window.uiManager = { t: key => key };
+      await showConfigDialog(true, {});
+      assert.equal(document.getElementById(`startup-view-${startupView}`).checked, true);
+      assert.equal(writes.length, 0, 'opening settings alone never writes');
+      const theme = document.getElementById('theme-select');
+      theme.value = 'paper';
+      await theme.dispatchEvent('change');
+      assert.equal(writes[0].startupView, startupView, 'unrelated settings preserve the startup preference');
+      assert.equal(writes[0].lastStartupView, 'effects');
+      assert.equal(writes[0].future, 42);
       await document.getElementById('close-btn').dispatchEvent('click');
     }
   } finally { Object.assign(globalThis, previous); }
