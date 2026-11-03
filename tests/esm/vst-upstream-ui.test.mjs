@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { readFile, readdir } from 'node:fs/promises';
+import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import test from 'node:test';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { createFakeDocument } from '../../external/effetune/tests/helpers/fake-dom.mjs';
 
@@ -265,6 +265,7 @@ test('default pipeline keeps Volume at unity and Level Meter, while saved gains 
     parameters: { vl: gain }, inputBus: 0, outputBus: 1, channel: 'L' });
   const cases = [
     { saved: null, expectedA: ['Volume', 'Level Meter'], gains: [0], current: 'A', defaults: [0] },
+    { saved: [], expectedA: ['Volume', 'Level Meter'], gains: [0], current: 'A', defaults: [0] },
     { saved: [volume(-6), { name: 'Level Meter', enabled: true, parameters: {} }],
       expectedA: ['Volume', 'Level Meter'], gains: [-6], current: 'A', defaults: [] },
     { saved: { pipelineA: [volume(-6)], pipelineB: [volume(-12, 9)], currentPipeline: 'B' },
@@ -300,11 +301,11 @@ test('default pipeline keeps Volume at unity and Level Meter, while saved gains 
     assert.deepEqual(Array.from(audioManager.pipelineA, p => p.name), expectedA);
     const volumes = [...audioManager.pipelineA, ...(audioManager.pipelineB || [])].filter(p => p.name === 'Volume');
     assert.deepEqual(volumes.map(p => p.vl), gains);
-    assert.deepEqual(defaultWrites, defaults, 'default gain setter is used only without saved state');
+    assert.deepEqual(defaultWrites, defaults, 'default gain setter is used only when creating the default pipeline');
     assert.equal(audioManager.currentPipeline, current);
     assert.deepEqual(rebuilds, [true]);
     assert.deepEqual(saved, savedBefore, 'restoring a pipeline never rewrites the stored state');
-    if (saved && volumes.length) {
+    if (saved && volumes.length && defaults.length === 0) {
       assert.ok(volumes.every(p => p.enabled === false && p.inputBus === 0 && p.outputBus === 1 && p.channel === 'L'));
     }
   }
@@ -1078,6 +1079,56 @@ test('bundled settings persist supported choices and restore rejected edits', as
       await document.getElementById('close-btn').dispatchEvent('click');
     }
   } finally { Object.assign(globalThis, previous); }
+});
+
+test('UI asset generation rejects missing, renamed and duplicate Effects locale keys', async () => {
+  const repository = fileURLToPath(new URL('../../', import.meta.url));
+  const temporary = await mkdtemp(path.join(repository, 'build', 'ui-locale-contract-'));
+  const source = path.join(temporary, 'source'), output = path.join(temporary, 'output');
+  const generator = path.join(repository, 'tools', 'build-ui-assets.mjs');
+  let generation = 0;
+  const generate = async () => {
+    const previousArguments = process.argv;
+    process.argv = [process.execPath, generator, '--source', source, '--out', output];
+    try { await import(`${pathToFileURL(generator).href}?localeContract=${temporary}-${++generation}`); }
+    finally { process.argv = previousArguments; }
+  };
+  try {
+    // Stage only the generator's inputs; leave the upstream submodule untouched.
+    for (const entry of ['js', 'plugins', 'presets', 'images', 'css', 'features/measurement', 'dsp/CMakeLists.txt', 'effetune.html']) {
+      const destination = path.join(source, entry);
+      await mkdir(path.dirname(destination), { recursive: true });
+      await cp(path.join(repository, 'external', 'effetune', entry), destination, { recursive: true });
+    }
+    await generate();
+    assert.equal(await readFile(path.join(output, '.stamp'), 'utf8'), 'mIV Sound WebView assets\n');
+    // Exercise both a locale with additions and one using English fallbacks.
+    for (const locale of ['en', 'fr']) {
+      const localePath = path.join(source, 'js', 'locales', `${locale}.json5`);
+      const original = await readFile(localePath, 'utf8');
+      const field = original.match(/^  "dialog\.config\.startupView\.effects":.*\r?\n/m)?.[0];
+      assert.ok(field, locale);
+      for (const [mutation, expectedCount] of [
+        [original.replace(field, ''), 0],
+        [original.replace('"dialog.config.startupView.effects":', '"dialog.config.startupView.pipeline":'), 0],
+        [original.replace(field, field + field), 2]
+      ]) {
+        await writeFile(localePath, mutation);
+        await assert.rejects(generate(), error => {
+          assert.match(error.message, /Expected exactly one upstream match/);
+          assert.match(error.message, /startupView/);
+          assert.match(error.message, new RegExp(`found ${expectedCount}`));
+          return true;
+        }, `${locale}: changed Effects key must stop generation`);
+        await assert.rejects(readFile(path.join(output, '.stamp')), { code: 'ENOENT' },
+          'failed generation must not publish the completion stamp');
+      }
+      await writeFile(localePath, original);
+    }
+  } finally {
+    assert.equal(path.dirname(temporary), path.resolve(repository, 'build'));
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test('Last view is translated and its saved radio choice reopens without rewriting config', async () => {

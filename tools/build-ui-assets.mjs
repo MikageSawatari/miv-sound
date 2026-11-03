@@ -27,7 +27,6 @@ const vstTourLocales = {
 };
 const vstLocaleAdditions = {
   en: {
-    'dialog.config.startupView.effects': 'Effect Pipeline',
     'dialog.config.startupView.last': 'Last view (Default)',
     'roomEq.action.import': 'Import\u2026',
     'roomEq.delete.title': 'Delete imported measurement',
@@ -36,7 +35,6 @@ const vstLocaleAdditions = {
     'roomEq.delete.error': 'The imported measurement could not be deleted.'
   },
   ja: {
-    'dialog.config.startupView.effects': 'Effect Pipeline',
     'dialog.config.startupView.last': '前回の表示 (デフォルト)',
     'roomEq.action.import': '測定をインポート\u2026',
     'roomEq.delete.title': 'インポートした測定を削除',
@@ -1004,18 +1002,18 @@ for (const localeFile of await readdir(localesPath)) {
   const localePath = path.join(localesPath, localeFile);
   const localeSource = await readText(localePath);
   let localized = applyProductBranding(localeSource);
+  // This existing key is required in every pinned locale. Stop generation if
+  // upstream renames, removes or duplicates it instead of adding an unused key.
+  localized = replaceOnce(localized,
+    /("dialog\.config\.startupView\.effects":\s*)"(?:[^"\\]|\\.)*"/,
+    (_match, prefix) => prefix + JSON.stringify('Effect Pipeline'));
   // Other locales use the supported English workflow until translated here.
   for (const [key, value] of Object.entries(vstTourLocales[path.basename(localeFile, '.json5')] || vstTourLocales.en)) {
     const field = `${JSON.stringify(key)}:`;
     const expression = new RegExp(`(${field.replaceAll('.', '\\.')}\\s*)"(?:[^"\\\\]|\\\\.)*"`);
     localized = replaceOnce(localized, expression, (_match, prefix) => prefix + JSON.stringify(value));
   }
-  const additions = {
-    // All pinned locales use the same Effects name with a localized default
-    // suffix. Remove that suffix everywhere; new labels fall back to English.
-    'dialog.config.startupView.effects': vstLocaleAdditions.en['dialog.config.startupView.effects'],
-    ...vstLocaleAdditions[path.basename(localeFile, '.json5')]
-  };
+  const additions = vstLocaleAdditions[path.basename(localeFile, '.json5')] || {};
   const fields = [];
   for (const [key, value] of Object.entries(additions)) {
     const field = `${JSON.stringify(key)}:`;
