@@ -394,12 +394,13 @@ if (!bootstrap.includes("helpButton.id = 'helpSettingsButton';") ||
     !bootstrap.includes('settingsMenu.appendChild(helpButton);')) {
   throw new Error('The VST settings menu Help action is missing or bypasses the native host');
 }
-if (!bootstrap.includes("const githubUrl = new URL('https://github.com/MikageSawatari/miv-sound');") ||
-    !bootstrap.includes("githubButton.id = 'githubSettingsButton';") ||
-    !bootstrap.includes("githubButton.textContent = 'Based on EffeTune Mixwright by Frieve';") ||
-    !bootstrap.includes('void openExternalUrl(githubUrl).catch') ||
-    !bootstrap.includes('settingsMenu.appendChild(githubButton);')) {
-  throw new Error('The untranslated VST settings menu GitHub action is missing or bypasses the native host');
+if (!bootstrap.includes("const sourceUrl = new URL('https://github.com/MikageSawatari/miv-sound');") ||
+    !bootstrap.includes("sourceButton.id = 'vst-source-code-button';") ||
+    !bootstrap.includes("translatedText('dialog.about.sourceCode', 'Source code')") ||
+    !bootstrap.includes('void openExternalUrl(sourceUrl).catch') ||
+    !bootstrap.includes('buttons.insertBefore(sourceButton, closeButton);') ||
+    bootstrap.includes('githubSettingsButton') || bootstrap.includes('githubButton')) {
+  throw new Error('Source code must open through the native host from About, with no settings-menu GitHub action');
 }
 if (!bootstrap.includes("aboutButton.id = 'aboutSettingsButton';") ||
     !bootstrap.includes("[aboutButton, 'menu.help.about', 'About']") ||

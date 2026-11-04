@@ -2002,7 +2002,9 @@ int runTestBody(const int argc, char **argv) {
             "dialog?.querySelector('.about-version')?.textContent === 'Version test' && "
             "dialog?.querySelector('.about-description')?.textContent === "
             "'Audio effects for mImageViewer' && "
-            "!!document.getElementById('vst-third-party-notices-button'); })()",
+            "!!document.getElementById('vst-third-party-notices-button') && "
+            "!!document.getElementById('vst-source-code-button') && "
+            "!document.getElementById('githubSettingsButton'); })()",
             kCompletionTimeout);
         const auto noticesStarted = aboutOpened && evaluate(
             "document.getElementById('vst-third-party-notices-button')?.click(); true", ignored) &&
@@ -2015,9 +2017,26 @@ int runTestBody(const int argc, char **argv) {
             "'VST is a registered trademark of Steinberg Media Technologies GmbH.'); })()",
             kCompletionTimeout);
         if (aboutOpened) {
-          evaluate("document.getElementById('vst-third-party-notices-close')?.click(); "
-                   "document.querySelector('.about-dialog #close-button')?.click(); true",
+          evaluate("document.getElementById('vst-third-party-notices-close')?.click(); true",
                    ignored);
+        }
+
+        const auto sourceStarted = aboutOpened && evaluate(
+            "(() => { const source = document.getElementById('vst-source-code-button'); "
+            "const notices = document.getElementById('vst-third-party-notices-button'); "
+            "if (source?.textContent !== '\u30bd\u30fc\u30b9\u30b3\u30fc\u30c9' || "
+            "source.previousElementSibling !== notices) return false; "
+            "source.click(); return !!document.querySelector('.about-dialog'); })()",
+            ignored) && ignored == "true";
+        const auto sourceDeadline =
+            effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
+        while (sourceStarted && smokeState.externalGitHubCalls.load(std::memory_order_relaxed) == 0 &&
+               std::chrono::steady_clock::now() < sourceDeadline) {
+          pumpMessages();
+          std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        if (aboutOpened) {
+          evaluate("document.querySelector('.about-dialog #close-button')?.click(); true", ignored);
         }
 
         const auto appHelpStarted = aboutNoticesReachable && evaluate(
@@ -2031,24 +2050,6 @@ int runTestBody(const int argc, char **argv) {
             effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
         while (appHelpStarted && smokeState.externalAppHelpCalls.load(std::memory_order_relaxed) == 0 &&
                std::chrono::steady_clock::now() < appHelpDeadline) {
-          pumpMessages();
-          std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-
-        // Exercise each action even if a different link's assertion fails.
-        const auto githubStarted = aboutNoticesReachable && evaluate(
-            "(() => { const menu = document.getElementById('settingsMenu'); "
-            "if (!menu?.classList.contains('show')) "
-            "document.getElementById('settingsMenuButton')?.click(); "
-            "const github = document.getElementById('githubSettingsButton'); "
-            "if (!menu?.classList.contains('show') || "
-            "github?.textContent !== 'Based on EffeTune Mixwright by Frieve') "
-            "return false; github.click(); return !menu.classList.contains('show'); })()",
-            ignored) && ignored == "true";
-        const auto githubDeadline =
-            effetune::vst::testing::webViewTestDeadlineAfter(kCompletionTimeout);
-        while (githubStarted && smokeState.externalGitHubCalls.load(std::memory_order_relaxed) == 0 &&
-               std::chrono::steady_clock::now() < githubDeadline) {
           pumpMessages();
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
@@ -2097,7 +2098,7 @@ int runTestBody(const int argc, char **argv) {
           pumpMessages();
           std::this_thread::sleep_for(std::chrono::milliseconds(10));
         }
-        externalLinksRouted = appHelpStarted && githubStarted && externalHelpStarted &&
+        externalLinksRouted = appHelpStarted && sourceStarted && externalHelpStarted &&
             remappedExternalHelpStarted && externalAiStarted &&
             smokeState.externalAppHelpCalls.load(std::memory_order_relaxed) == 1 &&
             smokeState.externalGitHubCalls.load(std::memory_order_relaxed) == 1 &&
@@ -2114,7 +2115,7 @@ int runTestBody(const int argc, char **argv) {
           linkChecks.addMember(name, std::move(result));
         };
         recordLink("appHelp", appHelpStarted, smokeState.externalAppHelpCalls);
-        recordLink("upstreamCredit", githubStarted, smokeState.externalGitHubCalls);
+        recordLink("sourceCode", sourceStarted, smokeState.externalGitHubCalls);
         recordLink("effectHelp", externalHelpStarted, smokeState.externalHelpCalls);
         recordLink("remappedHelp", remappedExternalHelpStarted, smokeState.remappedExternalHelpCalls);
         recordLink("ai", externalAiStarted, smokeState.externalAiCalls);

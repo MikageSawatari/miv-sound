@@ -1623,7 +1623,7 @@ async function bootstrap(hostMessage) {
   return context;
 }
 
-test('Help, mIV Sound repository, effect docs and AI clicks send URLs through the native bridge', async () => {
+test('Help, effect docs and AI clicks send URLs through the native bridge', async () => {
   const calls = [];
   const context = await bootstrap(async serialized => {
     calls.push(JSON.parse(serialized));
@@ -1661,8 +1661,7 @@ test('Help, mIV Sound repository, effect docs and AI clicks send URLs through th
   try {
     await document.dispatch('DOMContentLoaded');
     for (const [id, label] of [
-      ['helpSettingsButton', 'ヘルプ'],
-      ['githubSettingsButton', 'Based on EffeTune Mixwright by Frieve']
+      ['helpSettingsButton', 'ヘルプ']
     ]) {
       await settingsButton.click();
       const button = document.getElementById(id);
@@ -1671,6 +1670,7 @@ test('Help, mIV Sound repository, effect docs and AI clicks send URLs through th
       await button.click();
       assert.equal(menu.classList.contains('show'), false);
     }
+    assert.equal(document.getElementById('githubSettingsButton'), null);
 
     const { PipelineItemBuilder } = await assetModule('js/ui/pipeline/pipeline-item-builder.js');
     const { PipelineAIDialog } = await assetModule('js/ui/pipeline/pipeline-ai-dialog.js');
@@ -1694,7 +1694,6 @@ test('Help, mIV Sound repository, effect docs and AI clicks send URLs through th
     const query = 'How does it work?\n\nThis is about the Volume effect in mIV Sound audio processor.';
     assert.deepEqual(calls.filter(call => call.type === 'host/openExternal'), [
       'https://mikage.to/mimageviewer/manual/effetune.html',
-      'https://github.com/MikageSawatari/miv-sound',
       'https://effetune.frieve.com/docs/i18n/ja/plugins/basics.html#volume',
       'https://effetune.frieve.com/docs/i18n/ja/plugins/analyzer.html#level-meter',
       `https://chatgpt.com/?q=${encodeURIComponent(query)}`
@@ -1702,6 +1701,97 @@ test('Help, mIV Sound repository, effect docs and AI clicks send URLs through th
   } finally {
     Object.assign(globalThis, previous);
   }
+});
+
+test('About places translated Source code beside notices and opens it through the native bridge', async () => {
+  const calls = [], errors = [];
+  let rejectSource = false;
+  const context = await bootstrap(async serialized => {
+    const call = JSON.parse(serialized);
+    calls.push(call);
+    if (rejectSource && call.type === 'host/openExternal') return { ok: false, error: 'Test browser failure' };
+    return { ok: true, version: 'test' };
+  });
+  const { document, window } = context;
+  context.MutationObserver = class { observe() {} };
+  const createElement = document.createElement;
+  document.createElement = tag => Object.assign(createElement(tag), {
+    style: {}, querySelector: () => ({ value: '', style: {} })
+  });
+  const header = document.createElement('div'), menu = document.createElement('div'), settingsButton = document.createElement('button');
+  menu.id = 'settingsMenu'; settingsButton.id = 'settingsMenuButton';
+  settingsButton.addEventListener('click', () => menu.classList.toggle('show'));
+  header.append(settingsButton, menu);
+  header.insertBefore = node => header.appendChild(node);
+  document.body.appendChild(header);
+  document.getElementById = id => flatten(document.body).find(node => node.id === id) || null;
+  let about, buttons, description;
+  document.querySelector = selector => selector === '.header-buttons' ? header
+    : selector === '.about-dialog .dialog-buttons' ? buttons
+    : selector === '.about-dialog .about-description' ? description : null;
+  // Supply the upstream dialog's DOM boundary; execute the real shim additions,
+  // translations, click handlers, normalization and native bridge calls.
+  window.electronIntegration = { async showAboutDialog({ version }) {
+    assert.equal(version, 'test');
+    about?.remove();
+    about = new Element('div'); about.className = 'about-dialog';
+    description = new Element('div'); buttons = new Element('div');
+    const close = new Element('button'); close.id = 'close-button';
+    close.addEventListener('click', () => about.remove());
+    buttons.appendChild(close);
+    buttons.querySelector = selector => selector === '#close-button' ? close : null;
+    buttons.insertBefore = (node, reference) => {
+      const index = buttons.children.indexOf(reference);
+      assert.ok(index >= 0);
+      node.parentNode = buttons; buttons.children.splice(index, 0, node);
+    };
+    about.append(description, buttons); document.body.appendChild(about);
+  } };
+  const { UIManager } = await assetModule('js/ui-manager.js');
+  window.uiManager = { t: UIManager.prototype.t,
+    englishTranslations: vm.runInNewContext(`(${await assetText('js/locales/en.json5')})`),
+    setError: (...args) => errors.push(args) };
+  window.open = () => assert.fail('Source code must use the native bridge');
+  const previous = { window: globalThis.window, document: globalThis.document };
+  Object.assign(globalThis, { window, document });
+  try {
+    await document.dispatch('DOMContentLoaded');
+    assert.equal(document.getElementById('githubSettingsButton'), null);
+    assert.ok(menu.children.every(button => !button.textContent.startsWith('Based on')));
+    assert.equal(document.getElementById('vst-source-code-button'), null, 'source link appears only in About');
+    const openAbout = async () => {
+      await settingsButton.click();
+      await document.getElementById('aboutSettingsButton').click();
+      await until(() => document.getElementById('vst-source-code-button'));
+      assert.equal(menu.classList.contains('show'), false);
+    };
+    for (const [locale, label] of [['en', 'Source code'], ['ja', 'ソースコード'], ['fr', 'Source code']]) {
+      window.uiManager.translations = vm.runInNewContext(`(${await assetText(`js/locales/${locale}.json5`)})`);
+      await openAbout();
+      assert.deepEqual(buttons.children.map(button => button.id),
+        ['vst-third-party-notices-button', 'vst-source-code-button', 'close-button']);
+      assert.equal(buttons.children[0].textContent, 'Third party notices');
+      const source = document.getElementById('vst-source-code-button');
+      assert.equal(source.textContent, label);
+      const before = calls.filter(call => call.type === 'host/openExternal').length;
+      await source.click();
+      await until(() => calls.filter(call => call.type === 'host/openExternal').length === before + 1);
+      assert.deepEqual(calls.filter(call => call.type === 'host/openExternal').at(-1),
+        { type: 'host/openExternal', payload: { url: 'https://github.com/MikageSawatari/miv-sound' } });
+      assert.equal(document.body.contains(about), true, 'opening the source keeps About open');
+      await document.getElementById('close-button').click();
+    }
+    assert.deepEqual(errors, []);
+    rejectSource = true;
+    await openAbout();
+    await document.getElementById('vst-source-code-button').click();
+    await until(() => errors.length === 1);
+    assert.deepEqual(errors, [['Unable to open source code in the default browser.', true]]);
+    assert.equal(document.body.contains(about), true);
+    assert.equal(await assetText('THIRD-PARTY-NOTICES.txt'),
+      await readFile(new URL('../../THIRD-PARTY-NOTICES.txt', import.meta.url), 'utf8'));
+    assert.ok((await assetText('effetune.html')).includes('Based on EffeTune / EffeTune Mixwright by Frieve'));
+  } finally { Object.assign(globalThis, previous); }
 });
 
 test('bundled ElectronIntegration constructs with the VST subscription surface', async () => {

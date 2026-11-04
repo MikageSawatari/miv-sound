@@ -2,12 +2,14 @@
 
 mIV Sound is a modified version of [EffeTune Mixwright](https://github.com/Frieve-A/effetune-mixwright)
 by Frieve, based on upstream **v0.15.0** (`8c9a0a5`), for audio adjustment in
-[mImageViewer](https://mikage.to/mimageviewer/). Display version: **0.15.0-miv.4**;
+[mImageViewer](https://mikage.to/mimageviewer/). Display version: **0.15.0-miv.5**;
 numeric build version: **0.15.0.1**. Please direct inquiries about this version
 to mImageViewer.
 
 This repository is the [mIV Sound fork](https://github.com/MikageSawatari/miv-sound)
 of EffeTune / EffeTune Mixwright by Frieve, both licensed under MIT.
+Open **Settings → About → Source code** to visit the mIV Sound repository.
+**Third party notices** beside it contains the complete upstream licenses.
 
 This version has its own product name, VST3 class IDs and musical-note icons.
 Settings, presets, SFZ references and WebView2 data live under the absolute

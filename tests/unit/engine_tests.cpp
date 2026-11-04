@@ -887,6 +887,11 @@ void testMessageRouter() {
              message.url == "https://effetune.frieve.com/docs/plugins/basics.html#volume",
          "external HTTPS URL routing");
   expect(MessageRouter::decode(
+             R"({"type":"host/openExternal","payload":{"url":"https://github.com/MikageSawatari/miv-sound"}})",
+             message, &error) && message.action == UiAction::openExternalUrl &&
+             message.url == "https://github.com/MikageSawatari/miv-sound",
+         "About source code URL uses the external HTTPS route");
+  expect(MessageRouter::decode(
              R"({"type":"host/openExternal","payload":{"url":"http://localhost/help"}})",
              message, &error) && message.action == UiAction::openExternalUrl,
          "external HTTP URL routing");

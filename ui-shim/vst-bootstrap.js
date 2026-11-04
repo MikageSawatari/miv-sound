@@ -314,7 +314,7 @@
   });
   const productionUrl = new URL('https://effetune.frieve.com/');
   const helpUrl = new URL('https://mikage.to/mimageviewer/manual/effetune.html');
-  const githubUrl = new URL('https://github.com/MikageSawatari/miv-sound');
+  const sourceUrl = new URL('https://github.com/MikageSawatari/miv-sound');
   const normalizeExternalUrl = value => {
     const source = String(value || '');
     try {
@@ -398,6 +398,16 @@
     noticesButton.textContent = 'Third party notices';
     noticesButton.addEventListener('click', () => void showThirdPartyNotices());
     buttons.insertBefore(noticesButton, closeButton);
+    const sourceButton = document.createElement('button');
+    sourceButton.type = 'button';
+    sourceButton.id = 'vst-source-code-button';
+    sourceButton.textContent = translatedText('dialog.about.sourceCode', 'Source code');
+    sourceButton.addEventListener('click', () => {
+      void openExternalUrl(sourceUrl).catch(() => {
+        window.uiManager?.setError?.('Unable to open source code in the default browser.', true);
+      });
+    });
+    buttons.insertBefore(sourceButton, closeButton);
   };
   window.electronAPI = {
     sfzLibraryV1,
@@ -719,12 +729,6 @@
       helpButton.id = 'helpSettingsButton';
       helpButton.textContent = 'Help';
 
-      const githubButton = document.createElement('button');
-      githubButton.type = 'button';
-      githubButton.className = 'settings-menu-item';
-      githubButton.id = 'githubSettingsButton';
-      githubButton.textContent = 'Based on EffeTune Mixwright by Frieve';
-
       const aboutButton = document.createElement('button');
       aboutButton.type = 'button';
       aboutButton.className = 'settings-menu-item';
@@ -747,12 +751,6 @@
           window.uiManager?.setError?.('Unable to open Help in the default browser.', true);
         });
       });
-      githubButton.addEventListener('click', () => {
-        settingsMenu.classList.remove('show');
-        void openExternalUrl(githubUrl).catch(() => {
-          window.uiManager?.setError?.('Unable to open GitHub in the default browser.', true);
-        });
-      });
       aboutButton.addEventListener('click', () => {
         settingsMenu.classList.remove('show');
         void showAboutDialog().catch(() => {
@@ -760,7 +758,6 @@
         });
       });
       settingsMenu.appendChild(helpButton);
-      settingsMenu.appendChild(githubButton);
       settingsMenu.appendChild(aboutButton);
       updateHelpLabels();
     }

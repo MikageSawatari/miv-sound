@@ -28,6 +28,7 @@ const vstTourLocales = {
 const vstLocaleAdditions = {
   en: {
     'dialog.config.startupView.last': 'Last view (Default)',
+    'dialog.about.sourceCode': 'Source code',
     'roomEq.action.import': 'Import\u2026',
     'roomEq.delete.title': 'Delete imported measurement',
     'roomEq.delete.confirm':
@@ -36,6 +37,7 @@ const vstLocaleAdditions = {
   },
   ja: {
     'dialog.config.startupView.last': '前回の表示 (デフォルト)',
+    'dialog.about.sourceCode': 'ソースコード',
     'roomEq.action.import': '測定をインポート\u2026',
     'roomEq.delete.title': 'インポートした測定を削除',
     'roomEq.delete.confirm':
