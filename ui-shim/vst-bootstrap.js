@@ -353,12 +353,16 @@
       overlay.setAttribute('aria-labelledby', 'vst-third-party-notices-title');
       overlay.innerHTML = `
         <div class="vst-third-party-notices-dialog">
-          <h2 id="vst-third-party-notices-title">Third party notices</h2>
+          <h2 id="vst-third-party-notices-title"></h2>
           <pre class="vst-third-party-notices-content"></pre>
           <div class="dialog-buttons">
-            <button type="button" id="vst-third-party-notices-close">Close</button>
+            <button type="button" id="vst-third-party-notices-close"></button>
           </div>
         </div>`;
+      overlay.querySelector('#vst-third-party-notices-title').textContent = translatedText(
+        'dialog.about.thirdPartyNotices', 'Third party notices');
+      overlay.querySelector('#vst-third-party-notices-close').textContent = translatedText(
+        'dialog.config.close', 'Close');
       overlay.querySelector('.vst-third-party-notices-content').textContent = notices;
       document.body.appendChild(overlay);
 
@@ -374,7 +378,8 @@
       overlay.querySelector('#vst-third-party-notices-close').focus();
     } catch {
       window.uiManager?.setError?.(
-        'The bundled third-party notices could not be loaded. Reopen or reinstall the plug-in.',
+        translatedText('dialog.about.noticesLoadError',
+          'The bundled third-party notices could not be loaded. Reopen or reinstall the plug-in.'),
         true);
     }
   };
@@ -386,16 +391,21 @@
     await window.electronIntegration.showAboutDialog({ version: info.version });
 
     const description = document.querySelector('.about-dialog .about-description');
-    if (description) description.textContent = 'Audio effects for mImageViewer';
+    if (description) description.textContent = translatedText(
+      'dialog.about.description', 'Audio effects for mImageViewer');
+    const version = document.querySelector('.about-dialog .about-version');
+    if (version) version.textContent = translatedText(
+      'dialog.about.version', `Version ${info.version}`, { version: info.version });
     const buttons = document.querySelector('.about-dialog .dialog-buttons');
     const closeButton = buttons?.querySelector('#close-button');
+    if (closeButton) closeButton.textContent = translatedText('dialog.config.close', 'Close');
     if (!buttons || !closeButton || document.getElementById('vst-third-party-notices-button')) {
       return;
     }
     const noticesButton = document.createElement('button');
     noticesButton.type = 'button';
     noticesButton.id = 'vst-third-party-notices-button';
-    noticesButton.textContent = 'Third party notices';
+    noticesButton.textContent = translatedText('dialog.about.thirdPartyNotices', 'Third party notices');
     noticesButton.addEventListener('click', () => void showThirdPartyNotices());
     buttons.insertBefore(noticesButton, closeButton);
     const sourceButton = document.createElement('button');

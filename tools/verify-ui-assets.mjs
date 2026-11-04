@@ -405,12 +405,42 @@ if (!bootstrap.includes("const sourceUrl = new URL('https://github.com/MikageSaw
 if (!bootstrap.includes("aboutButton.id = 'aboutSettingsButton';") ||
     !bootstrap.includes("[aboutButton, 'menu.help.about', 'About']") ||
     !bootstrap.includes("window.electronIntegration.showAboutDialog({ version: info.version })") ||
-    !bootstrap.includes("description.textContent = 'Audio effects for mImageViewer'") ||
-    !bootstrap.includes("noticesButton.textContent = 'Third party notices';") ||
+    !bootstrap.includes("'dialog.about.description', 'Audio effects for mImageViewer'") ||
+    !bootstrap.includes("'dialog.about.version', `Version ${info.version}`, { version: info.version }") ||
+    !bootstrap.includes("closeButton.textContent = translatedText('dialog.config.close', 'Close')") ||
+    !bootstrap.includes("noticesButton.textContent = translatedText('dialog.about.thirdPartyNotices', 'Third party notices')") ||
+    !bootstrap.includes("overlay.querySelector('#vst-third-party-notices-title').textContent = translatedText(") ||
+    !bootstrap.includes("overlay.querySelector('#vst-third-party-notices-close').textContent = translatedText(\n        'dialog.config.close', 'Close')") ||
+    !bootstrap.includes("translatedText('dialog.about.noticesLoadError',") ||
     !bootstrap.includes("fetch('THIRD-PARTY-NOTICES.txt')") ||
     !bootstrap.includes("overlay.querySelector('.vst-third-party-notices-content').textContent = notices") ||
     !bootstrap.includes('settingsMenu.appendChild(aboutButton);')) {
   throw new Error('The VST About dialog or complete third-party notices viewer is missing');
+}
+for (const [locale, expected] of [
+  [englishLocale, {
+    'dialog.config.close': 'Close',
+    'dialog.about.thirdPartyNotices': 'Third party notices',
+    'dialog.about.description': 'Audio effects for mImageViewer',
+    'dialog.about.version': 'Version {version}',
+    'dialog.about.noticesLoadError':
+      'The bundled third-party notices could not be loaded. Reopen or reinstall the plug-in.'
+  }],
+  [japaneseLocale, {
+    'dialog.config.close': '閉じる',
+    'dialog.about.thirdPartyNotices': 'サードパーティーのライセンス',
+    'dialog.about.description': 'mImageViewer 用のオーディオエフェクト',
+    'dialog.about.version': 'バージョン {version}',
+    'dialog.about.noticesLoadError':
+      '同梱のサードパーティーのライセンスを読み込めませんでした。プラグインを開き直すか、再インストールしてください。'
+  }]
+]) {
+  for (const [key, value] of Object.entries(expected)) {
+    if (locale.split(`${JSON.stringify(key)}:`).length !== 2 ||
+        !locale.includes(`${JSON.stringify(key)}: ${JSON.stringify(value)}`)) {
+      throw new Error(`The VST About translation is missing, incorrect or duplicated: ${key}`);
+    }
+  }
 }
 if (uiManager.includes('double-blind-test/double-blind-test.js') ||
     html.includes('id="doubleBlindTestButton"') ||

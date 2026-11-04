@@ -1703,7 +1703,7 @@ test('Help, effect docs and AI clicks send URLs through the native bridge', asyn
   }
 });
 
-test('About places translated Source code beside notices and opens it through the native bridge', async () => {
+test('About and notices translate, reopen without duplicate buttons, and use the native source link', async () => {
   const calls = [], errors = [];
   let rejectSource = false;
   const context = await bootstrap(async serialized => {
@@ -1713,11 +1713,35 @@ test('About places translated Source code beside notices and opens it through th
     return { ok: true, version: 'test' };
   });
   const { document, window } = context;
+  const notices = await assetText('THIRD-PARTY-NOTICES.txt');
+  let rejectNotices = false;
+  context.fetch = async url => {
+    assert.equal(url, 'THIRD-PARTY-NOTICES.txt');
+    return { ok: !rejectNotices, status: rejectNotices ? 404 : 200, text: async () => notices };
+  };
   context.MutationObserver = class { observe() {} };
   const createElement = document.createElement;
-  document.createElement = tag => Object.assign(createElement(tag), {
-    style: {}, querySelector: () => ({ value: '', style: {} })
-  });
+  document.createElement = tag => {
+    const element = Object.assign(createElement(tag), {
+      style: {}, querySelector: () => ({ value: '', style: {} })
+    });
+    Object.defineProperty(element, 'innerHTML', { set(html) {
+      if (!element.classList.contains('vst-third-party-notices-overlay')) return;
+      // Parse the dialog's HTML boundary; labels and handlers come from the shim.
+      for (const match of html.matchAll(/<(\w+)\b([^>]*)>/g)) {
+        const child = new Element(match[1]);
+        child.id = match[2].match(/\bid="([^"]*)"/)?.[1];
+        child.className = match[2].match(/\bclass="([^"]*)"/)?.[1] || '';
+        element.appendChild(child);
+      }
+      element.querySelector = selector => flatten(element).find(node => selector.startsWith('#')
+        ? node.id === selector.slice(1) : node.classList.contains(selector.slice(1))) || null;
+    } });
+    return element;
+  };
+  document.removeEventListener = (type, listener) => {
+    document.listeners.set(type, (document.listeners.get(type) || []).filter(item => item !== listener));
+  };
   const header = document.createElement('div'), menu = document.createElement('div'), settingsButton = document.createElement('button');
   menu.id = 'settingsMenu'; settingsButton.id = 'settingsMenuButton';
   settingsButton.addEventListener('click', () => menu.classList.toggle('show'));
@@ -1725,18 +1749,21 @@ test('About places translated Source code beside notices and opens it through th
   header.insertBefore = node => header.appendChild(node);
   document.body.appendChild(header);
   document.getElementById = id => flatten(document.body).find(node => node.id === id) || null;
-  let about, buttons, description;
+  let about, buttons, description, versionLabel, aboutOpenings = 0;
   document.querySelector = selector => selector === '.header-buttons' ? header
     : selector === '.about-dialog .dialog-buttons' ? buttons
+    : selector === '.about-dialog .about-version' ? versionLabel
     : selector === '.about-dialog .about-description' ? description : null;
   // Supply the upstream dialog's DOM boundary; execute the real shim additions,
   // translations, click handlers, normalization and native bridge calls.
   window.electronIntegration = { async showAboutDialog({ version }) {
     assert.equal(version, 'test');
-    about?.remove();
+    aboutOpenings++;
+    if (about && document.body.contains(about)) return;
     about = new Element('div'); about.className = 'about-dialog';
-    description = new Element('div'); buttons = new Element('div');
+    description = new Element('div'); buttons = new Element('div'); versionLabel = new Element('div');
     const close = new Element('button'); close.id = 'close-button';
+    close.textContent = 'Close';
     close.addEventListener('click', () => about.remove());
     buttons.appendChild(close);
     buttons.querySelector = selector => selector === '#close-button' ? close : null;
@@ -1745,7 +1772,7 @@ test('About places translated Source code beside notices and opens it through th
       assert.ok(index >= 0);
       node.parentNode = buttons; buttons.children.splice(index, 0, node);
     };
-    about.append(description, buttons); document.body.appendChild(about);
+    about.append(versionLabel, description, buttons); document.body.appendChild(about);
   } };
   const { UIManager } = await assetModule('js/ui-manager.js');
   window.uiManager = { t: UIManager.prototype.t,
@@ -1760,26 +1787,63 @@ test('About places translated Source code beside notices and opens it through th
     assert.ok(menu.children.every(button => !button.textContent.startsWith('Based on')));
     assert.equal(document.getElementById('vst-source-code-button'), null, 'source link appears only in About');
     const openAbout = async () => {
+      const before = aboutOpenings;
       await settingsButton.click();
       await document.getElementById('aboutSettingsButton').click();
-      await until(() => document.getElementById('vst-source-code-button'));
+      await until(() => aboutOpenings === before + 1 && document.getElementById('vst-source-code-button'));
       assert.equal(menu.classList.contains('show'), false);
     };
-    for (const [locale, label] of [['en', 'Source code'], ['ja', 'ソースコード'], ['fr', 'Source code']]) {
-      window.uiManager.translations = vm.runInNewContext(`(${await assetText(`js/locales/${locale}.json5`)})`);
-      await openAbout();
-      assert.deepEqual(buttons.children.map(button => button.id),
-        ['vst-third-party-notices-button', 'vst-source-code-button', 'close-button']);
-      assert.equal(buttons.children[0].textContent, 'Third party notices');
-      const source = document.getElementById('vst-source-code-button');
-      assert.equal(source.textContent, label);
-      const before = calls.filter(call => call.type === 'host/openExternal').length;
-      await source.click();
-      await until(() => calls.filter(call => call.type === 'host/openExternal').length === before + 1);
-      assert.deepEqual(calls.filter(call => call.type === 'host/openExternal').at(-1),
-        { type: 'host/openExternal', payload: { url: 'https://github.com/MikageSawatari/miv-sound' } });
-      assert.equal(document.body.contains(about), true, 'opening the source keeps About open');
-      await document.getElementById('close-button').click();
+    const localeFiles = (await readdir(path.join(assets, 'js/locales'))).filter(file => file.endsWith('.json5'));
+    // Also exercise translatedText's literal fallback without either dictionary.
+    for (const file of [...localeFiles, null]) {
+      const japanese = file === 'ja.json5';
+      window.uiManager.translations = file ? vm.runInNewContext(`(${await assetText(`js/locales/${file}`)})`) : {};
+      const english = window.uiManager.englishTranslations;
+      if (!file) window.uiManager.englishTranslations = {};
+      const label = japanese ? 'ソースコード' : 'Source code';
+      const noticesLabel = japanese ? 'サードパーティーのライセンス' : 'Third party notices';
+      const closeLabel = window.uiManager.translations['dialog.config.close'] || 'Close';
+      const expectedDescription = japanese ? 'mImageViewer 用のオーディオエフェクト' : 'Audio effects for mImageViewer';
+      const expectedVersion = japanese ? 'バージョン test' : 'Version test';
+      for (let opening = 0; opening < 2; opening++) {
+        await openAbout();
+        // Reenter while the upstream dialog is already present, too.
+        await openAbout();
+        assert.deepEqual(buttons.children.map(button => button.id),
+          ['vst-third-party-notices-button', 'vst-source-code-button', 'close-button']);
+        assert.equal(buttons.children[0].textContent, noticesLabel);
+        assert.equal(buttons.children[2].textContent, closeLabel);
+        assert.equal(description.textContent, expectedDescription);
+        assert.equal(versionLabel.textContent, expectedVersion);
+        const keydownCount = (document.listeners.get('keydown') || []).length;
+        await buttons.children[0].click();
+        await until(() => document.getElementById('vst-third-party-notices-close'));
+        const overlay = byClass(document.body, 'vst-third-party-notices-overlay');
+        const noticesClose = document.getElementById('vst-third-party-notices-close');
+        assert.equal(document.getElementById('vst-third-party-notices-title').textContent, noticesLabel);
+        assert.equal(noticesClose.textContent, closeLabel);
+        assert.equal(byClass(overlay, 'vst-third-party-notices-content').textContent, notices,
+          'complete license text stays unchanged in every language');
+        assert.equal(document.activeElement, noticesClose);
+        assert.equal((document.listeners.get('keydown') || []).length, keydownCount + 1);
+        if (opening === 0) await noticesClose.click();
+        else for (const listener of document.listeners.get('keydown') || []) listener({ key: 'Escape' });
+        assert.equal(document.body.contains(overlay), false);
+        assert.equal((document.listeners.get('keydown') || []).length, keydownCount);
+        assert.equal(document.body.contains(about), true, 'closing notices keeps About open');
+        const source = document.getElementById('vst-source-code-button');
+        assert.equal(source.textContent, label);
+        const before = calls.filter(call => call.type === 'host/openExternal').length;
+        await source.click();
+        await until(() => calls.filter(call => call.type === 'host/openExternal').length === before + 1);
+        assert.deepEqual(calls.filter(call => call.type === 'host/openExternal').at(-1),
+          { type: 'host/openExternal', payload: { url: 'https://github.com/MikageSawatari/miv-sound' } });
+        assert.equal(document.body.contains(about), true, 'opening the source keeps About open');
+        await document.getElementById('close-button').click();
+        assert.equal(document.body.contains(about), false);
+        assert.equal(document.getElementById('vst-third-party-notices-button'), null);
+      }
+      window.uiManager.englishTranslations = english;
     }
     assert.deepEqual(errors, []);
     rejectSource = true;
@@ -1788,6 +1852,16 @@ test('About places translated Source code beside notices and opens it through th
     await until(() => errors.length === 1);
     assert.deepEqual(errors, [['Unable to open source code in the default browser.', true]]);
     assert.equal(document.body.contains(about), true);
+    for (const file of ['en.json5', 'ja.json5', 'fr.json5']) {
+      window.uiManager.translations = vm.runInNewContext(`(${await assetText(`js/locales/${file}`)})`);
+      rejectNotices = true;
+      await document.getElementById('vst-third-party-notices-button').click();
+      await until(() => errors.length === 2);
+      assert.deepEqual(errors.pop(), [file === 'ja.json5'
+        ? '同梱のサードパーティーのライセンスを読み込めませんでした。プラグインを開き直すか、再インストールしてください。'
+        : 'The bundled third-party notices could not be loaded. Reopen or reinstall the plug-in.', true]);
+      assert.equal(byClass(document.body, 'vst-third-party-notices-overlay'), undefined);
+    }
     assert.equal(await assetText('THIRD-PARTY-NOTICES.txt'),
       await readFile(new URL('../../THIRD-PARTY-NOTICES.txt', import.meta.url), 'utf8'));
     assert.ok((await assetText('effetune.html')).includes('Based on EffeTune / EffeTune Mixwright by Frieve'));
