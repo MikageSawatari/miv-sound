@@ -162,8 +162,8 @@
     }
     /* Fit the Japanese labels on one row when space permits; on narrow
        overlays wrap whole buttons within the dialog's content width.
-       `body` outranks upstream's later `.about-dialog { width: 440px }`
-       without relying on the host class, which the page may reset. */
+       The body prefix outranks upstream's later about-dialog width rule
+       without relying on the host class, which is absent at this point. */
     body .about-dialog {
       width: 520px;
     }
