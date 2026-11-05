@@ -1999,10 +1999,13 @@ int runTestBody(const int argc, char **argv) {
         const auto aboutOpened = aboutStarted && waitForJavascript(
             "(() => { const dialog = document.querySelector('.about-dialog'); "
             "return dialog?.querySelector('h2')?.textContent === 'mIV Sound' && "
-            "dialog?.querySelector('.about-version')?.textContent === 'Version test' && "
+            "dialog?.querySelector('.about-version')?.textContent === "
+            "'\u30d0\u30fc\u30b8\u30e7\u30f3 test' && "
             "dialog?.querySelector('.about-description')?.textContent === "
-            "'Audio effects for mImageViewer' && "
-            "!!document.getElementById('vst-third-party-notices-button') && "
+            "'mImageViewer \u7528\u306e\u30aa\u30fc\u30c7\u30a3\u30aa\u30a8\u30d5\u30a7\u30af\u30c8' && "
+            "dialog?.querySelector('#close-button')?.textContent === '\u9589\u3058\u308b' && "
+            "document.getElementById('vst-third-party-notices-button')?.textContent === "
+            "'\u30b5\u30fc\u30c9\u30d1\u30fc\u30c6\u30a3\u30fc\u306e\u30e9\u30a4\u30bb\u30f3\u30b9' && "
             "!!document.getElementById('vst-source-code-button') && "
             "!document.getElementById('githubSettingsButton'); })()",
             kCompletionTimeout);
@@ -2012,7 +2015,11 @@ int runTestBody(const int argc, char **argv) {
         aboutNoticesReachable = noticesStarted && waitForJavascript(
             "(() => { const text = document.querySelector("
             "'.vst-third-party-notices-content')?.textContent || ''; "
-            "return text.startsWith('mIV Sound - Third-Party Notices') && "
+            "return document.getElementById('vst-third-party-notices-title')?.textContent === "
+            "'\u30b5\u30fc\u30c9\u30d1\u30fc\u30c6\u30a3\u30fc\u306e\u30e9\u30a4\u30bb\u30f3\u30b9' && "
+            "document.getElementById('vst-third-party-notices-close')?.textContent === "
+            "'\u9589\u3058\u308b' && "
+            "text.startsWith('mIV Sound - Third-Party Notices') && "
             "text.trimEnd().endsWith("
             "'VST is a registered trademark of Steinberg Media Technologies GmbH.'); })()",
             kCompletionTimeout);
