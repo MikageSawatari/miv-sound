@@ -161,8 +161,10 @@
       text-align: center;
     }
     /* Fit the Japanese labels on one row when space permits; on narrow
-       overlays wrap whole buttons within the dialog's content width. */
-    html.effetune-vst-host .about-dialog {
+       overlays wrap whole buttons within the dialog's content width.
+       `body` outranks upstream's later `.about-dialog { width: 440px }`
+       without relying on the host class, which the page may reset. */
+    body .about-dialog {
       width: 520px;
     }
     .about-dialog .dialog-buttons {
