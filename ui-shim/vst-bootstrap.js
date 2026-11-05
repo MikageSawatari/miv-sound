@@ -160,6 +160,19 @@
       margin: 0 0 16px;
       text-align: center;
     }
+    /* Fit the Japanese labels on one row when space permits; on narrow
+       overlays wrap whole buttons within the dialog's content width. */
+    html.effetune-vst-host .about-dialog {
+      width: 520px;
+    }
+    .about-dialog .dialog-buttons {
+      align-self: stretch;
+      flex-wrap: wrap;
+    }
+    .about-dialog .dialog-buttons button {
+      flex: 0 0 auto;
+      white-space: nowrap;
+    }
     .about-dialog .dialog-buttons,
     .vst-third-party-notices-dialog .dialog-buttons {
       gap: 8px;

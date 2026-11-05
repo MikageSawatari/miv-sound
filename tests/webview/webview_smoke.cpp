@@ -975,6 +975,8 @@ int runTestBody(const int argc, char **argv) {
   bool upstream213IntegrationValid = false;
   std::string upstream213IntegrationDiagnostics;
   bool aboutNoticesReachable = false;
+  bool aboutButtonLayoutValid = false;
+  std::string aboutButtonLayoutDiagnostics;
   bool externalLinksRouted = false;
   bool isolatedWebOrigin = false;
   bool offThreadUiTeardownCompleted = false;
@@ -2046,6 +2048,80 @@ int runTestBody(const int argc, char **argv) {
           evaluate("document.querySelector('.about-dialog #close-button')?.click(); true", ignored);
         }
 
+        const auto aboutLayoutStarted = aboutOpened && evaluate(R"JS(
+          (() => {
+            (async () => {
+              try {
+                for (const language of ['ja', 'en']) {
+                  await window.uiManager.setLanguagePreference(language, { persist: false });
+                  document.getElementById('settingsMenuButton').click();
+                  document.getElementById('aboutSettingsButton').click();
+                  // About loads its animation and host metadata asynchronously.
+                  let dialog;
+                  for (let frame = 0; frame < 300; ++frame) {
+                    dialog = document.querySelector('.about-dialog');
+                    if (dialog?.querySelector('#vst-source-code-button')) break;
+                    await new Promise(requestAnimationFrame);
+                  }
+                  const buttons = [...(dialog?.querySelectorAll('.dialog-buttons button') || [])];
+                  const expected = language === 'ja'
+                    ? ['サードパーティーのライセンス', 'ソースコード', '閉じる']
+                    : ['Third party notices', 'Source code', 'Close'];
+                  if (JSON.stringify(buttons.map(button => button.textContent)) !== JSON.stringify(expected))
+                    throw new Error(language + ': About buttons unavailable or untranslated');
+                  const overlay = dialog.parentElement;
+                  // Constrain the fixed overlay, the containing block used by
+                  // upstream max-width, without changing the dialog/button CSS.
+                  for (const width of [720, 360, 320]) {
+                    overlay.style.width = width + 'px';
+                    const bounds = dialog.getBoundingClientRect();
+                    const rows = new Set();
+                    if (Math.abs(bounds.width - Math.min(520, width - 32)) > 1)
+                      throw new Error(language + '/' + width + ': dialog width/max-width changed');
+                    for (const button of buttons) {
+                      const rect = button.getBoundingClientRect();
+                      const range = document.createRange();
+                      range.selectNodeContents(button);
+                      const textRects = [...range.getClientRects()];
+                      const lines = new Set(textRects.map(line => Math.round(line.top)));
+                      rows.add(Math.round(rect.top));
+                      if (!rect.width || !rect.height || lines.size !== 1 ||
+                          rect.left < bounds.left || rect.right > bounds.right ||
+                          rect.top < bounds.top || rect.bottom > bounds.bottom ||
+                          textRects.some(line => line.left < rect.left || line.right > rect.right) ||
+                          button.scrollWidth > button.clientWidth + 1)
+                        throw new Error(language + '/' + width + ': wrapped or overflowing button ' +
+                          button.textContent + ' ' + JSON.stringify({ button: rect.toJSON(),
+                            dialog: bounds.toJSON(), lines: [...lines] }));
+                    }
+                    if ((width === 720 && rows.size !== 1) || (width === 320 && rows.size < 2))
+                      throw new Error(language + '/' + width + ': unexpected button rows ' + rows.size);
+                    if (dialog.scrollWidth > dialog.clientWidth + 1)
+                      throw new Error(language + '/' + width + ': dialog overflows horizontally');
+                  }
+                  dialog.querySelector('#close-button').click();
+                  if (document.querySelector('.about-dialog')) throw new Error('About did not close');
+                }
+                window.__vstAboutButtonLayoutReady = true;
+              } catch (error) {
+                window.__vstAboutButtonLayoutError = String(error);
+              } finally {
+                document.querySelector('.about-dialog #close-button')?.click();
+                await window.uiManager.setLanguagePreference('ja', { persist: false });
+                window.__vstAboutButtonLayoutComplete = true;
+              }
+            })();
+            return true;
+          })()
+        )JS", ignored) && ignored == "true";
+        aboutButtonLayoutValid = aboutLayoutStarted && waitForJavascript(
+            "window.__vstAboutButtonLayoutComplete === true", kCompletionTimeout) &&
+            evaluate("window.__vstAboutButtonLayoutReady === true", ignored) && ignored == "true";
+        if (!aboutButtonLayoutValid) {
+          evaluate("String(window.__vstAboutButtonLayoutError || 'About layout check did not complete')",
+                   aboutButtonLayoutDiagnostics);
+        }
+
         const auto appHelpStarted = aboutNoticesReachable && evaluate(
             "(() => { const menu = document.getElementById('settingsMenu'); "
             "document.getElementById('settingsMenuButton')?.click(); "
@@ -2684,6 +2760,7 @@ int runTestBody(const int argc, char **argv) {
       {"measurementImport", measurementImportAvailable},
       {"sfzAndGuitarIntegration", upstream213IntegrationValid},
       {"aboutNotices", aboutNoticesReachable},
+      {"aboutButtonLayout", aboutButtonLayoutValid},
       {"externalLinks", externalLinksRouted},
       {"masterBypass", masterToggleReachedNative},
       {"defaultViewport", defaultViewportFits},
@@ -2837,6 +2914,11 @@ int runTestBody(const int argc, char **argv) {
   if (!aboutNoticesReachable) {
     std::cerr << "The About dialog did not show the Mixwright version and complete third-party "
                  "notices\n";
+    return 1;
+  }
+  if (!aboutButtonLayoutValid) {
+    std::cerr << "About buttons wrapped their labels or overflowed in Japanese/English: "
+              << aboutButtonLayoutDiagnostics << '\n';
     return 1;
   }
   if (!externalLinksRouted) {
